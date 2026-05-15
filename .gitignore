@@ -1,0 +1,70 @@
+# Godot editor/cache data
+.backup/
+.import/
+.godot/
+*.import
+
+# UID files
+*.uid
+
+# Android export build
+/android/
+
+# Build/export output directories
+/build/
+bin/
+dist/
+/spacetime/server/spacetimedb/target/
+/spacetime/config
+/spacetime/data
+
+# spacetimedb data
+/spacetime-data/*
+/spacetime-keys/*
+
+/pixijs/src/data
+# Exported games
+*.pck
+*.apk
+*.aab
+*.exe
+*.x86_64
+*.arm64
+*.ipa
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Rust build artifacts
+/target/
+**/*.rs.bk
+
+# wasm-pack output for the shared `content` crate (regenerated via `bin/content wasm`)
+/content/pkg/
+
+# Cargo
+Cargo.lock
+
+# SpaceTimeDB local state
+.spacetimedb/
+spacetimedb.db
+
+# Environment / secrets
+.env
+.env.*
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# npm
+pixijs/node_modules/*
