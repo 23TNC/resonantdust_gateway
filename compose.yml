@@ -1,0 +1,41 @@
+networks:
+  resonantdust:
+    external: true
+
+services:
+  # Long-lived gateway container. It joins the resonantdust network and
+  # idles (`sleep infinity`) so the binary can be run/re-run inside it via
+  # `bin/gate publish` / `republish` — mirroring how `st publish` deploys
+  # into the always-on spacetime container. The compiled binary lives at
+  # /workspace/target/release/gateway (shared with the build service via
+  # the bind mount).
+  gate:
+    image: rust:slim
+    networks:
+      - resonantdust
+    ports:
+      - "8080:8080"
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    command: ["sleep", "infinity"]
+
+  # One-shot release build. `bin/gate build` invokes this with
+  # `run --rm build`; cargo writes to /workspace/target, which the `gate`
+  # service mounts from the same host dir, so the freshly built binary is
+  # immediately runnable inside the live container.
+  build:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    # spacetimedb-lib's build script shells out to `git rev-parse HEAD` to
+    # stamp a commit hash, panicking when git is absent (it is, in rust:slim).
+    # Setting this env var (its Nix escape hatch) supplies the hash directly
+    # and skips the git call. Value is the spacetime cli 2.3.0 commit that
+    # generated src/bindings/.
+    environment:
+      SPACETIMEDB_NIX_BUILD_GIT_COMMIT: "aa73d1c35b4b346b98eeba10a3d756b4ae72162f"
+    command: ["cargo", "build", "--release"]

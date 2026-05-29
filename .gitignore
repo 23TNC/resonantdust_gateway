@@ -37,9 +37,9 @@ dist/
 Thumbs.db
 
 # Rust build artifacts
-/target/
+*/target/*
 **/*.rs.bk
-
+/target/
 # wasm-pack output for the shared `content` crate (regenerated via `bin/content wasm`)
 /content/pkg/
 
