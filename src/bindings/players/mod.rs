@@ -11,43 +11,29 @@ use spacetimedb_sdk::__codegen::{
 	__ws,
 };
 
-pub mod card_type;
-pub mod card_id_counter_type;
 pub mod gc_schedule_type;
 pub mod player_type;
 pub mod player_id_counter_type;
 pub mod player_profile_type;
 pub mod player_session_type;
 pub mod sequence_counter_type;
-pub mod soul_type;
-pub mod soul_private_type;
-pub mod add_card_reducer;
 pub mod claim_or_login_reducer;
 pub mod set_last_login_reducer;
-pub mod cards_table;
+pub mod set_player_faction_reducer;
 pub mod player_profiles_table;
 pub mod players_table;
-pub mod soul_privates_table;
-pub mod souls_table;
 
-pub use card_type::Card;
-pub use card_id_counter_type::CardIdCounter;
 pub use gc_schedule_type::GcSchedule;
 pub use player_type::Player;
 pub use player_id_counter_type::PlayerIdCounter;
 pub use player_profile_type::PlayerProfile;
 pub use player_session_type::PlayerSession;
 pub use sequence_counter_type::SequenceCounter;
-pub use soul_type::Soul;
-pub use soul_private_type::SoulPrivate;
-pub use cards_table::*;
 pub use player_profiles_table::*;
 pub use players_table::*;
-pub use soul_privates_table::*;
-pub use souls_table::*;
-pub use add_card_reducer::add_card;
 pub use claim_or_login_reducer::claim_or_login;
 pub use set_last_login_reducer::set_last_login;
+pub use set_player_faction_reducer::set_player_faction;
 
 #[derive(Clone, PartialEq, Debug)]
 
@@ -57,17 +43,17 @@ pub use set_last_login_reducer::set_last_login;
 /// to indicate which reducer caused the event.
 
 pub enum Reducer {
-        AddCard {
-        client_time_ms: u64,
-        soul_card_id: u32,
-        card_key: String,
-}    ,
-    ClaimOrLogin {
+        ClaimOrLogin {
         client_time_ms: u64,
         name: String,
 }    ,
     SetLastLogin {
         client_time_ms: u64,
+}    ,
+    SetPlayerFaction {
+        player_id: u32,
+        time_ms: u64,
+        faction: u8,
 }    ,
 }
 
@@ -79,25 +65,16 @@ impl __sdk::InModule for Reducer {
 impl __sdk::Reducer for Reducer {
     fn reducer_name(&self) -> &'static str {
         match self {
-                        Reducer::AddCard { .. } => "add_card",
-            Reducer::ClaimOrLogin { .. } => "claim_or_login",
+                        Reducer::ClaimOrLogin { .. } => "claim_or_login",
             Reducer::SetLastLogin { .. } => "set_last_login",
+            Reducer::SetPlayerFaction { .. } => "set_player_faction",
             _ => unreachable!(),
 }
 }
     #[allow(clippy::clone_on_copy)]
 fn args_bsatn(&self) -> Result<Vec<u8>, __sats::bsatn::EncodeError> {
         match self {
-                        Reducer::AddCard{
-                client_time_ms,
-                soul_card_id,
-                card_key,
-}             => __sats::bsatn::to_vec(&add_card_reducer::AddCardArgs {
-                client_time_ms: client_time_ms.clone(),
-                soul_card_id: soul_card_id.clone(),
-                card_key: card_key.clone(),
-}),
-            Reducer::ClaimOrLogin{
+                        Reducer::ClaimOrLogin{
                 client_time_ms,
                 name,
 }             => __sats::bsatn::to_vec(&claim_or_login_reducer::ClaimOrLoginArgs {
@@ -109,6 +86,15 @@ fn args_bsatn(&self) -> Result<Vec<u8>, __sats::bsatn::EncodeError> {
 }             => __sats::bsatn::to_vec(&set_last_login_reducer::SetLastLoginArgs {
                 client_time_ms: client_time_ms.clone(),
 }),
+            Reducer::SetPlayerFaction{
+                player_id,
+                time_ms,
+                faction,
+}             => __sats::bsatn::to_vec(&set_player_faction_reducer::SetPlayerFactionArgs {
+                player_id: player_id.clone(),
+                time_ms: time_ms.clone(),
+                faction: faction.clone(),
+}),
             _ => unreachable!(),
 }
 }
@@ -118,11 +104,8 @@ fn args_bsatn(&self) -> Result<Vec<u8>, __sats::bsatn::EncodeError> {
 #[allow(non_snake_case)]
 #[doc(hidden)]
 pub struct DbUpdate {
-        cards: __sdk::TableUpdate<Card>,
-    player_profiles: __sdk::TableUpdate<PlayerProfile>,
+        player_profiles: __sdk::TableUpdate<PlayerProfile>,
     players: __sdk::TableUpdate<Player>,
-    soul_privates: __sdk::TableUpdate<SoulPrivate>,
-    souls: __sdk::TableUpdate<Soul>,
 }
 
 
@@ -133,11 +116,8 @@ impl TryFrom<__ws::v2::TransactionUpdate> for DbUpdate {
         for table_update in __sdk::transaction_update_iter_table_updates(raw) {
             match &table_update.table_name[..] {
 
-        "cards" => db_update.cards.append(cards_table::parse_table_update(table_update)?),
-    "player_profiles" => db_update.player_profiles.append(player_profiles_table::parse_table_update(table_update)?),
+        "player_profiles" => db_update.player_profiles.append(player_profiles_table::parse_table_update(table_update)?),
     "players" => db_update.players.append(players_table::parse_table_update(table_update)?),
-    "soul_privates" => db_update.soul_privates.append(soul_privates_table::parse_table_update(table_update)?),
-    "souls" => db_update.souls.append(souls_table::parse_table_update(table_update)?),
 
                 unknown => {
                     return Err(__sdk::InternalError::unknown_name(
@@ -160,11 +140,8 @@ impl __sdk::DbUpdate for DbUpdate {
     fn apply_to_client_cache(&self, cache: &mut __sdk::ClientCache<RemoteModule>) -> AppliedDiff<'_> {
                     let mut diff = AppliedDiff::default();
                 
-                diff.cards = cache.apply_diff_to_table::<Card>("cards", &self.cards).with_updates_by_pk(|row| &row.valid_at);
-        diff.player_profiles = cache.apply_diff_to_table::<PlayerProfile>("player_profiles", &self.player_profiles).with_updates_by_pk(|row| &row.player_id);
+                diff.player_profiles = cache.apply_diff_to_table::<PlayerProfile>("player_profiles", &self.player_profiles).with_updates_by_pk(|row| &row.player_id);
         diff.players = cache.apply_diff_to_table::<Player>("players", &self.players).with_updates_by_pk(|row| &row.valid_at);
-        diff.soul_privates = cache.apply_diff_to_table::<SoulPrivate>("soul_privates", &self.soul_privates).with_updates_by_pk(|row| &row.card_id);
-        diff.souls = cache.apply_diff_to_table::<Soul>("souls", &self.souls).with_updates_by_pk(|row| &row.valid_at);
 
                     diff
                 }
@@ -172,11 +149,8 @@ fn parse_initial_rows(raw: __ws::v2::QueryRows) -> __sdk::Result<Self> {
                 let mut db_update = DbUpdate::default();
 for table_rows in raw.tables {
             match &table_rows.table[..] {
-                                "cards" => db_update.cards.append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
-                "player_profiles" => db_update.player_profiles.append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
+                                "player_profiles" => db_update.player_profiles.append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
                 "players" => db_update.players.append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
-                "soul_privates" => db_update.soul_privates.append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
-                "souls" => db_update.souls.append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
                 unknown => { return Err(__sdk::InternalError::unknown_name("table", unknown, "QueryRows").into()); }
 }}        Ok(db_update)
 }
@@ -184,11 +158,8 @@ fn parse_unsubscribe_rows(raw: __ws::v2::QueryRows) -> __sdk::Result<Self> {
                 let mut db_update = DbUpdate::default();
 for table_rows in raw.tables {
             match &table_rows.table[..] {
-                                "cards" => db_update.cards.append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
-                "player_profiles" => db_update.player_profiles.append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
+                                "player_profiles" => db_update.player_profiles.append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
                 "players" => db_update.players.append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
-                "soul_privates" => db_update.soul_privates.append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
-                "souls" => db_update.souls.append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
                 unknown => { return Err(__sdk::InternalError::unknown_name("table", unknown, "QueryRows").into()); }
 }}        Ok(db_update)
 }
@@ -198,11 +169,8 @@ for table_rows in raw.tables {
 #[allow(non_snake_case)]
 #[doc(hidden)]
 pub struct AppliedDiff<'r> {
-        cards: __sdk::TableAppliedDiff<'r, Card>,
-    player_profiles: __sdk::TableAppliedDiff<'r, PlayerProfile>,
+        player_profiles: __sdk::TableAppliedDiff<'r, PlayerProfile>,
     players: __sdk::TableAppliedDiff<'r, Player>,
-    soul_privates: __sdk::TableAppliedDiff<'r, SoulPrivate>,
-    souls: __sdk::TableAppliedDiff<'r, Soul>,
     __unused: std::marker::PhantomData<&'r ()>,
 }
 
@@ -213,11 +181,8 @@ impl __sdk::InModule for AppliedDiff<'_> {
 
 impl<'r> __sdk::AppliedDiff<'r> for AppliedDiff<'r> {
     fn invoke_row_callbacks(&self, event: &EventContext, callbacks: &mut __sdk::DbCallbacks<RemoteModule>) {
-                callbacks.invoke_table_row_callbacks::<Card>("cards", &self.cards, event);
-        callbacks.invoke_table_row_callbacks::<PlayerProfile>("player_profiles", &self.player_profiles, event);
+                callbacks.invoke_table_row_callbacks::<PlayerProfile>("player_profiles", &self.player_profiles, event);
         callbacks.invoke_table_row_callbacks::<Player>("players", &self.players, event);
-        callbacks.invoke_table_row_callbacks::<SoulPrivate>("soul_privates", &self.soul_privates, event);
-        callbacks.invoke_table_row_callbacks::<Soul>("souls", &self.souls, event);
 }
 }
 
@@ -869,17 +834,11 @@ impl __sdk::SpacetimeModule for RemoteModule {
     type QueryBuilder = __sdk::QueryBuilder;
 
 fn register_tables(client_cache: &mut __sdk::ClientCache<Self>) {
-                cards_table::register_table(client_cache);
-        player_profiles_table::register_table(client_cache);
+                player_profiles_table::register_table(client_cache);
         players_table::register_table(client_cache);
-        soul_privates_table::register_table(client_cache);
-        souls_table::register_table(client_cache);
 }
 const ALL_TABLE_NAMES: &'static [&'static str] = &[
-                "cards",
-        "player_profiles",
+                "player_profiles",
         "players",
-        "soul_privates",
-        "souls",
 ];
 }

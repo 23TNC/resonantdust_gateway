@@ -1,12 +1,19 @@
 //! resonantdust gateway — the bridge between the client and the SpacetimeDB
-//! data shards. Milestone 1 stands up the inbound listener only: a WS endpoint
-//! clients connect to, plus a health check. Upstream shard connections, the
-//! real client<->gate protocol, and multi-shard merge land in later milestones
-//! (see `protocol.rs` / `upstream.rs` when they arrive).
+//! data shards. It serves an inbound WS listener (`ws`) for clients and holds
+//! a lazy pool of upstream connections (`connections`) to the sharded modules,
+//! routed via `routing` and named via `config`. Recipe gather/validate/apply
+//! land in later workstreams.
 
 mod bindings;
-mod upstream;
+mod config;
+mod connections;
+mod gather;
+mod protocol;
+mod routing;
+mod validation;
 mod ws;
+
+use std::sync::Arc;
 
 use axum::{routing::get, Router};
 use tokio::net::TcpListener;
@@ -16,26 +23,24 @@ use tokio::signal;
 /// reaches it; override with `GATE_LISTEN`.
 const DEFAULT_LISTEN: &str = "0.0.0.0:8080";
 
-/// SpacetimeDB server the shards live on. On the `resonantdust` network the
-/// spacetime container is reachable as `start`; override with `GATE_STDB_URI`.
-const DEFAULT_STDB_URI: &str = "http://start:3000";
-
 #[tokio::main]
 async fn main() {
     init_tracing();
 
     let listen = std::env::var("GATE_LISTEN").unwrap_or_else(|_| DEFAULT_LISTEN.to_string());
 
-    // Connect upstream to the shard before serving clients. Held for the
-    // process lifetime so the SDK message loop keeps running; a build failure
-    // is logged but does not stop the inbound listener.
-    let env = std::env::var("GATE_ENV").unwrap_or_else(|_| "dev".to_string());
-    let uri = std::env::var("GATE_STDB_URI").unwrap_or_else(|_| DEFAULT_STDB_URI.to_string());
-    let _shard = upstream::spawn_shard(uri, format!("resonantdust-{env}-shard"));
+    // Build the upstream pool and warm the shard relay target before serving
+    // clients. The pool retains live connections for the process lifetime; a
+    // failed connect is logged but does not stop the inbound listener.
+    let cfg = config::GateConfig::from_env();
+    tracing::info!(uri = %cfg.uri, env = %cfg.env, "gate config");
+    let pool = Arc::new(connections::Pool::new(cfg));
+    let _ = pool.shard();
 
     let app = Router::new()
         .route("/health", get(health))
-        .route("/ws", get(ws::handler));
+        .route("/ws", get(ws::handler))
+        .with_state(pool);
 
     let listener = match TcpListener::bind(&listen).await {
         Ok(l) => l,

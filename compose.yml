@@ -30,6 +30,10 @@ services:
       dockerfile: Dockerfile
     volumes:
       - .:/workspace
+      # Shared content crate, mounted where gateway/Cargo.toml's
+      # `path = "content"` dep resolves it (mirrors how the spacetime
+      # modules mount ../content into their crate dirs).
+      - ../content:/workspace/content
     working_dir: /workspace
     # spacetimedb-lib's build script shells out to `git rev-parse HEAD` to
     # stamp a commit hash, panicking when git is absent (it is, in rust:slim).

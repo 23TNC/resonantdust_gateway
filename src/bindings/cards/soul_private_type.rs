@@ -14,7 +14,6 @@ use spacetimedb_sdk::__codegen::{
 #[sats(crate = __lib)]
 pub struct SoulPrivate {
     pub card_id: u32,
-    pub data_shard: u16,
     pub blueprints_0: u64,
     pub active_blueprints: u8,
 }
@@ -30,7 +29,6 @@ impl __sdk::InModule for SoulPrivate {
 /// Provides typed access to columns for query building.
 pub struct SoulPrivateCols {
     pub card_id: __sdk::__query_builder::Col<SoulPrivate, u32>,
-    pub data_shard: __sdk::__query_builder::Col<SoulPrivate, u16>,
     pub blueprints_0: __sdk::__query_builder::Col<SoulPrivate, u64>,
     pub active_blueprints: __sdk::__query_builder::Col<SoulPrivate, u8>,
 }
@@ -40,7 +38,6 @@ impl __sdk::__query_builder::HasCols for SoulPrivate {
     fn cols(table_name: &'static str) -> Self::Cols {
         SoulPrivateCols {
             card_id: __sdk::__query_builder::Col::new(table_name, "card_id"),
-            data_shard: __sdk::__query_builder::Col::new(table_name, "data_shard"),
             blueprints_0: __sdk::__query_builder::Col::new(table_name, "blueprints_0"),
             active_blueprints: __sdk::__query_builder::Col::new(table_name, "active_blueprints"),
 

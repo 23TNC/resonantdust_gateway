@@ -13,6 +13,20 @@ axum = { version = "0.8", features = ["ws"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 futures-util = "0.3"
+# Client<->gate protocol framing + relaying shard rows/reducers as JSON.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# sats->serde bridge: serialize generated shard row types (sats Serialize, not
+# serde) to JSON for the client.
+spacetimedb-sats = "2.3"
+# Relay client reducer calls to shard's HTTP /call endpoint. http-only, so no
+# TLS backend needed.
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
 # Upstream client to the SpacetimeDB shards. Must match the generator that
 # produced src/bindings/ (spacetime cli 2.3.0).
 spacetimedb-sdk = "2.3"
+# Shared content crate: registries + bit-packing helpers (card_id/macro_zone
+# routing, recipe validation). Bind-mounted at /workspace/content by the
+# compose `build` service, so this path resolves in-container — the host
+# gateway dir has no content/ (it lives in the main repo, mounted in).
+resonantdust-content = { path = "content" }

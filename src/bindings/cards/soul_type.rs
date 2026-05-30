@@ -14,7 +14,6 @@ use spacetimedb_sdk::__codegen::{
 #[sats(crate = __lib)]
 pub struct Soul {
     pub valid_at: u64,
-    pub data_shard: u16,
     pub card_id: u32,
     pub owner_id: u32,
     pub macro_zone: u64,
@@ -35,7 +34,6 @@ impl __sdk::InModule for Soul {
 /// Provides typed access to columns for query building.
 pub struct SoulCols {
     pub valid_at: __sdk::__query_builder::Col<Soul, u64>,
-    pub data_shard: __sdk::__query_builder::Col<Soul, u16>,
     pub card_id: __sdk::__query_builder::Col<Soul, u32>,
     pub owner_id: __sdk::__query_builder::Col<Soul, u32>,
     pub macro_zone: __sdk::__query_builder::Col<Soul, u64>,
@@ -50,7 +48,6 @@ impl __sdk::__query_builder::HasCols for Soul {
     fn cols(table_name: &'static str) -> Self::Cols {
         SoulCols {
             valid_at: __sdk::__query_builder::Col::new(table_name, "valid_at"),
-            data_shard: __sdk::__query_builder::Col::new(table_name, "data_shard"),
             card_id: __sdk::__query_builder::Col::new(table_name, "card_id"),
             owner_id: __sdk::__query_builder::Col::new(table_name, "owner_id"),
             macro_zone: __sdk::__query_builder::Col::new(table_name, "macro_zone"),

@@ -14,75 +14,39 @@ use spacetimedb_sdk::__codegen::{
 pub mod card_type;
 pub mod card_id_counter_type;
 pub mod gc_schedule_type;
-pub mod lifecycle_pending_type;
 pub mod pending_action_type;
-pub mod placement_type;
-pub mod player_type;
-pub mod player_id_counter_type;
-pub mod player_profile_type;
-pub mod player_session_type;
-pub mod region_type;
 pub mod sequence_counter_type;
 pub mod soul_type;
 pub mod soul_private_type;
-pub mod tile_point_type;
-pub mod zone_type;
+pub mod acquire_hold_reducer;
 pub mod add_card_reducer;
-pub mod bootstrap_reducer;
-pub mod claim_or_login_reducer;
-pub mod deploy_mini_zone_reducer;
-pub mod generate_forest_terrain_reducer;
-pub mod move_soul_reducer;
-pub mod pickup_mini_zone_reducer;
-pub mod place_card_reducer;
-pub mod propose_action_reducer;
-pub mod request_blueprint_reducer;
-pub mod request_zone_reducer;
-pub mod set_last_login_reducer;
+pub mod claim_pending_reducer;
+pub mod create_card_reducer;
+pub mod destroy_card_reducer;
+pub mod release_hold_reducer;
+pub mod release_pending_reducer;
 pub mod spawn_soul_reducer;
 pub mod cards_table;
-pub mod player_profiles_table;
-pub mod players_table;
-pub mod regions_table;
 pub mod soul_privates_table;
 pub mod souls_table;
-pub mod zones_table;
 
 pub use card_type::Card;
 pub use card_id_counter_type::CardIdCounter;
 pub use gc_schedule_type::GcSchedule;
-pub use lifecycle_pending_type::LifecyclePending;
 pub use pending_action_type::PendingAction;
-pub use placement_type::Placement;
-pub use player_type::Player;
-pub use player_id_counter_type::PlayerIdCounter;
-pub use player_profile_type::PlayerProfile;
-pub use player_session_type::PlayerSession;
-pub use region_type::Region;
 pub use sequence_counter_type::SequenceCounter;
 pub use soul_type::Soul;
 pub use soul_private_type::SoulPrivate;
-pub use tile_point_type::TilePoint;
-pub use zone_type::Zone;
 pub use cards_table::*;
-pub use player_profiles_table::*;
-pub use players_table::*;
-pub use regions_table::*;
 pub use soul_privates_table::*;
 pub use souls_table::*;
-pub use zones_table::*;
+pub use acquire_hold_reducer::acquire_hold;
 pub use add_card_reducer::add_card;
-pub use bootstrap_reducer::bootstrap;
-pub use claim_or_login_reducer::claim_or_login;
-pub use deploy_mini_zone_reducer::deploy_mini_zone;
-pub use generate_forest_terrain_reducer::generate_forest_terrain;
-pub use move_soul_reducer::move_soul;
-pub use pickup_mini_zone_reducer::pickup_mini_zone;
-pub use place_card_reducer::place_card;
-pub use propose_action_reducer::propose_action;
-pub use request_blueprint_reducer::request_blueprint;
-pub use request_zone_reducer::request_zone;
-pub use set_last_login_reducer::set_last_login;
+pub use claim_pending_reducer::claim_pending;
+pub use create_card_reducer::create_card;
+pub use destroy_card_reducer::destroy_card;
+pub use release_hold_reducer::release_hold;
+pub use release_pending_reducer::release_pending;
 pub use spawn_soul_reducer::spawn_soul;
 
 #[derive(Clone, PartialEq, Debug)]
@@ -93,69 +57,46 @@ pub use spawn_soul_reducer::spawn_soul;
 /// to indicate which reducer caused the event.
 
 pub enum Reducer {
-        AddCard {
+        AcquireHold {
+        card_id: u32,
+        time_ms: u64,
+        kind: u8,
+}    ,
+    AddCard {
         client_time_ms: u64,
         soul_card_id: u32,
         card_key: String,
 }    ,
-    Bootstrap ,
-    ClaimOrLogin {
-        client_time_ms: u64,
-        name: String,
-}    ,
-    DeployMiniZone {
-        client_time_ms: u64,
-        anchor_card_id: u32,
-        target_macro_zone: u64,
-        target_local_q: u8,
-        target_local_r: u8,
-}    ,
-    GenerateForestTerrain {
-        seed: u64,
-        radius: i16,
-}    ,
-    MoveSoul {
-        client_time_ms: u64,
-        soul_id: u32,
-        path: Vec::<TilePoint>,
-}    ,
-    PickupMiniZone {
-        client_time_ms: u64,
-        anchor_card_id: u32,
-}    ,
-    PlaceCard {
-        client_time_ms: u64,
-        card_id: u32,
-        placement: Placement,
-}    ,
-    ProposeAction {
-        client_time_ms: u64,
+    ClaimPending {
         recipe_id: u16,
-        surface: u8,
-        macro_zone: u64,
-        micro_location: u32,
         root: u32,
         bindings: Vec::<Vec::<u32>>,
+        completion_ms: u64,
 }    ,
-    RequestBlueprint {
-        client_time_ms: u64,
-        soul_card_id: u32,
-        blueprint_id: u16,
+    CreateCard {
+        time_ms: u64,
+        def_key: String,
         surface: u8,
         macro_zone: u64,
-        micro_location: u32,
+        owner_id: u32,
 }    ,
-    RequestZone {
-        client_time_ms: u64,
-        macro_zone: u64,
+    DestroyCard {
+        card_id: u32,
+        time_ms: u64,
 }    ,
-    SetLastLogin {
-        client_time_ms: u64,
+    ReleaseHold {
+        card_id: u32,
+        time_ms: u64,
+        kind: u8,
+}    ,
+    ReleasePending {
+        recipe_id: u16,
+        root: u32,
+        bindings: Vec::<Vec::<u32>>,
 }    ,
     SpawnSoul {
         client_time_ms: u64,
         player_id: u32,
-        soul_index: u32,
 }    ,
 }
 
@@ -167,18 +108,13 @@ impl __sdk::InModule for Reducer {
 impl __sdk::Reducer for Reducer {
     fn reducer_name(&self) -> &'static str {
         match self {
-                        Reducer::AddCard { .. } => "add_card",
-            Reducer::Bootstrap => "bootstrap",
-            Reducer::ClaimOrLogin { .. } => "claim_or_login",
-            Reducer::DeployMiniZone { .. } => "deploy_mini_zone",
-            Reducer::GenerateForestTerrain { .. } => "generate_forest_terrain",
-            Reducer::MoveSoul { .. } => "move_soul",
-            Reducer::PickupMiniZone { .. } => "pickup_mini_zone",
-            Reducer::PlaceCard { .. } => "place_card",
-            Reducer::ProposeAction { .. } => "propose_action",
-            Reducer::RequestBlueprint { .. } => "request_blueprint",
-            Reducer::RequestZone { .. } => "request_zone",
-            Reducer::SetLastLogin { .. } => "set_last_login",
+                        Reducer::AcquireHold { .. } => "acquire_hold",
+            Reducer::AddCard { .. } => "add_card",
+            Reducer::ClaimPending { .. } => "claim_pending",
+            Reducer::CreateCard { .. } => "create_card",
+            Reducer::DestroyCard { .. } => "destroy_card",
+            Reducer::ReleaseHold { .. } => "release_hold",
+            Reducer::ReleasePending { .. } => "release_pending",
             Reducer::SpawnSoul { .. } => "spawn_soul",
             _ => unreachable!(),
 }
@@ -186,7 +122,16 @@ impl __sdk::Reducer for Reducer {
     #[allow(clippy::clone_on_copy)]
 fn args_bsatn(&self) -> Result<Vec<u8>, __sats::bsatn::EncodeError> {
         match self {
-                        Reducer::AddCard{
+                        Reducer::AcquireHold{
+                card_id,
+                time_ms,
+                kind,
+}             => __sats::bsatn::to_vec(&acquire_hold_reducer::AcquireHoldArgs {
+                card_id: card_id.clone(),
+                time_ms: time_ms.clone(),
+                kind: kind.clone(),
+}),
+            Reducer::AddCard{
                 client_time_ms,
                 soul_card_id,
                 card_key,
@@ -195,112 +140,61 @@ fn args_bsatn(&self) -> Result<Vec<u8>, __sats::bsatn::EncodeError> {
                 soul_card_id: soul_card_id.clone(),
                 card_key: card_key.clone(),
 }),
-            Reducer::Bootstrap => __sats::bsatn::to_vec(&bootstrap_reducer::BootstrapArgs {
-                }),
-Reducer::ClaimOrLogin{
-                client_time_ms,
-                name,
-}             => __sats::bsatn::to_vec(&claim_or_login_reducer::ClaimOrLoginArgs {
-                client_time_ms: client_time_ms.clone(),
-                name: name.clone(),
-}),
-            Reducer::DeployMiniZone{
-                client_time_ms,
-                anchor_card_id,
-                target_macro_zone,
-                target_local_q,
-                target_local_r,
-}             => __sats::bsatn::to_vec(&deploy_mini_zone_reducer::DeployMiniZoneArgs {
-                client_time_ms: client_time_ms.clone(),
-                anchor_card_id: anchor_card_id.clone(),
-                target_macro_zone: target_macro_zone.clone(),
-                target_local_q: target_local_q.clone(),
-                target_local_r: target_local_r.clone(),
-}),
-            Reducer::GenerateForestTerrain{
-                seed,
-                radius,
-}             => __sats::bsatn::to_vec(&generate_forest_terrain_reducer::GenerateForestTerrainArgs {
-                seed: seed.clone(),
-                radius: radius.clone(),
-}),
-            Reducer::MoveSoul{
-                client_time_ms,
-                soul_id,
-                path,
-}             => __sats::bsatn::to_vec(&move_soul_reducer::MoveSoulArgs {
-                client_time_ms: client_time_ms.clone(),
-                soul_id: soul_id.clone(),
-                path: path.clone(),
-}),
-            Reducer::PickupMiniZone{
-                client_time_ms,
-                anchor_card_id,
-}             => __sats::bsatn::to_vec(&pickup_mini_zone_reducer::PickupMiniZoneArgs {
-                client_time_ms: client_time_ms.clone(),
-                anchor_card_id: anchor_card_id.clone(),
-}),
-            Reducer::PlaceCard{
-                client_time_ms,
-                card_id,
-                placement,
-}             => __sats::bsatn::to_vec(&place_card_reducer::PlaceCardArgs {
-                client_time_ms: client_time_ms.clone(),
-                card_id: card_id.clone(),
-                placement: placement.clone(),
-}),
-            Reducer::ProposeAction{
-                client_time_ms,
+            Reducer::ClaimPending{
                 recipe_id,
-                surface,
-                macro_zone,
-                micro_location,
                 root,
                 bindings,
-}             => __sats::bsatn::to_vec(&propose_action_reducer::ProposeActionArgs {
-                client_time_ms: client_time_ms.clone(),
+                completion_ms,
+}             => __sats::bsatn::to_vec(&claim_pending_reducer::ClaimPendingArgs {
                 recipe_id: recipe_id.clone(),
-                surface: surface.clone(),
-                macro_zone: macro_zone.clone(),
-                micro_location: micro_location.clone(),
                 root: root.clone(),
                 bindings: bindings.clone(),
+                completion_ms: completion_ms.clone(),
 }),
-            Reducer::RequestBlueprint{
-                client_time_ms,
-                soul_card_id,
-                blueprint_id,
+            Reducer::CreateCard{
+                time_ms,
+                def_key,
                 surface,
                 macro_zone,
-                micro_location,
-}             => __sats::bsatn::to_vec(&request_blueprint_reducer::RequestBlueprintArgs {
-                client_time_ms: client_time_ms.clone(),
-                soul_card_id: soul_card_id.clone(),
-                blueprint_id: blueprint_id.clone(),
+                owner_id,
+}             => __sats::bsatn::to_vec(&create_card_reducer::CreateCardArgs {
+                time_ms: time_ms.clone(),
+                def_key: def_key.clone(),
                 surface: surface.clone(),
                 macro_zone: macro_zone.clone(),
-                micro_location: micro_location.clone(),
+                owner_id: owner_id.clone(),
 }),
-            Reducer::RequestZone{
-                client_time_ms,
-                macro_zone,
-}             => __sats::bsatn::to_vec(&request_zone_reducer::RequestZoneArgs {
-                client_time_ms: client_time_ms.clone(),
-                macro_zone: macro_zone.clone(),
+            Reducer::DestroyCard{
+                card_id,
+                time_ms,
+}             => __sats::bsatn::to_vec(&destroy_card_reducer::DestroyCardArgs {
+                card_id: card_id.clone(),
+                time_ms: time_ms.clone(),
 }),
-            Reducer::SetLastLogin{
-                client_time_ms,
-}             => __sats::bsatn::to_vec(&set_last_login_reducer::SetLastLoginArgs {
-                client_time_ms: client_time_ms.clone(),
+            Reducer::ReleaseHold{
+                card_id,
+                time_ms,
+                kind,
+}             => __sats::bsatn::to_vec(&release_hold_reducer::ReleaseHoldArgs {
+                card_id: card_id.clone(),
+                time_ms: time_ms.clone(),
+                kind: kind.clone(),
+}),
+            Reducer::ReleasePending{
+                recipe_id,
+                root,
+                bindings,
+}             => __sats::bsatn::to_vec(&release_pending_reducer::ReleasePendingArgs {
+                recipe_id: recipe_id.clone(),
+                root: root.clone(),
+                bindings: bindings.clone(),
 }),
             Reducer::SpawnSoul{
                 client_time_ms,
                 player_id,
-                soul_index,
 }             => __sats::bsatn::to_vec(&spawn_soul_reducer::SpawnSoulArgs {
                 client_time_ms: client_time_ms.clone(),
                 player_id: player_id.clone(),
-                soul_index: soul_index.clone(),
 }),
             _ => unreachable!(),
 }
@@ -312,12 +206,8 @@ Reducer::ClaimOrLogin{
 #[doc(hidden)]
 pub struct DbUpdate {
         cards: __sdk::TableUpdate<Card>,
-    player_profiles: __sdk::TableUpdate<PlayerProfile>,
-    players: __sdk::TableUpdate<Player>,
-    regions: __sdk::TableUpdate<Region>,
     soul_privates: __sdk::TableUpdate<SoulPrivate>,
     souls: __sdk::TableUpdate<Soul>,
-    zones: __sdk::TableUpdate<Zone>,
 }
 
 
@@ -329,12 +219,8 @@ impl TryFrom<__ws::v2::TransactionUpdate> for DbUpdate {
             match &table_update.table_name[..] {
 
         "cards" => db_update.cards.append(cards_table::parse_table_update(table_update)?),
-    "player_profiles" => db_update.player_profiles.append(player_profiles_table::parse_table_update(table_update)?),
-    "players" => db_update.players.append(players_table::parse_table_update(table_update)?),
-    "regions" => db_update.regions.append(regions_table::parse_table_update(table_update)?),
     "soul_privates" => db_update.soul_privates.append(soul_privates_table::parse_table_update(table_update)?),
     "souls" => db_update.souls.append(souls_table::parse_table_update(table_update)?),
-    "zones" => db_update.zones.append(zones_table::parse_table_update(table_update)?),
 
                 unknown => {
                     return Err(__sdk::InternalError::unknown_name(
@@ -358,12 +244,8 @@ impl __sdk::DbUpdate for DbUpdate {
                     let mut diff = AppliedDiff::default();
                 
                 diff.cards = cache.apply_diff_to_table::<Card>("cards", &self.cards).with_updates_by_pk(|row| &row.valid_at);
-        diff.player_profiles = cache.apply_diff_to_table::<PlayerProfile>("player_profiles", &self.player_profiles).with_updates_by_pk(|row| &row.player_id);
-        diff.players = cache.apply_diff_to_table::<Player>("players", &self.players).with_updates_by_pk(|row| &row.valid_at);
-        diff.regions = cache.apply_diff_to_table::<Region>("regions", &self.regions).with_updates_by_pk(|row| &row.valid_at);
         diff.soul_privates = cache.apply_diff_to_table::<SoulPrivate>("soul_privates", &self.soul_privates).with_updates_by_pk(|row| &row.card_id);
         diff.souls = cache.apply_diff_to_table::<Soul>("souls", &self.souls).with_updates_by_pk(|row| &row.valid_at);
-        diff.zones = cache.apply_diff_to_table::<Zone>("zones", &self.zones).with_updates_by_pk(|row| &row.valid_at);
 
                     diff
                 }
@@ -372,12 +254,8 @@ fn parse_initial_rows(raw: __ws::v2::QueryRows) -> __sdk::Result<Self> {
 for table_rows in raw.tables {
             match &table_rows.table[..] {
                                 "cards" => db_update.cards.append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
-                "player_profiles" => db_update.player_profiles.append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
-                "players" => db_update.players.append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
-                "regions" => db_update.regions.append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
                 "soul_privates" => db_update.soul_privates.append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
                 "souls" => db_update.souls.append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
-                "zones" => db_update.zones.append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
                 unknown => { return Err(__sdk::InternalError::unknown_name("table", unknown, "QueryRows").into()); }
 }}        Ok(db_update)
 }
@@ -386,12 +264,8 @@ fn parse_unsubscribe_rows(raw: __ws::v2::QueryRows) -> __sdk::Result<Self> {
 for table_rows in raw.tables {
             match &table_rows.table[..] {
                                 "cards" => db_update.cards.append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
-                "player_profiles" => db_update.player_profiles.append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
-                "players" => db_update.players.append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
-                "regions" => db_update.regions.append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
                 "soul_privates" => db_update.soul_privates.append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
                 "souls" => db_update.souls.append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
-                "zones" => db_update.zones.append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
                 unknown => { return Err(__sdk::InternalError::unknown_name("table", unknown, "QueryRows").into()); }
 }}        Ok(db_update)
 }
@@ -402,12 +276,8 @@ for table_rows in raw.tables {
 #[doc(hidden)]
 pub struct AppliedDiff<'r> {
         cards: __sdk::TableAppliedDiff<'r, Card>,
-    player_profiles: __sdk::TableAppliedDiff<'r, PlayerProfile>,
-    players: __sdk::TableAppliedDiff<'r, Player>,
-    regions: __sdk::TableAppliedDiff<'r, Region>,
     soul_privates: __sdk::TableAppliedDiff<'r, SoulPrivate>,
     souls: __sdk::TableAppliedDiff<'r, Soul>,
-    zones: __sdk::TableAppliedDiff<'r, Zone>,
     __unused: std::marker::PhantomData<&'r ()>,
 }
 
@@ -419,12 +289,8 @@ impl __sdk::InModule for AppliedDiff<'_> {
 impl<'r> __sdk::AppliedDiff<'r> for AppliedDiff<'r> {
     fn invoke_row_callbacks(&self, event: &EventContext, callbacks: &mut __sdk::DbCallbacks<RemoteModule>) {
                 callbacks.invoke_table_row_callbacks::<Card>("cards", &self.cards, event);
-        callbacks.invoke_table_row_callbacks::<PlayerProfile>("player_profiles", &self.player_profiles, event);
-        callbacks.invoke_table_row_callbacks::<Player>("players", &self.players, event);
-        callbacks.invoke_table_row_callbacks::<Region>("regions", &self.regions, event);
         callbacks.invoke_table_row_callbacks::<SoulPrivate>("soul_privates", &self.soul_privates, event);
         callbacks.invoke_table_row_callbacks::<Soul>("souls", &self.souls, event);
-        callbacks.invoke_table_row_callbacks::<Zone>("zones", &self.zones, event);
 }
 }
 
@@ -1077,20 +943,12 @@ impl __sdk::SpacetimeModule for RemoteModule {
 
 fn register_tables(client_cache: &mut __sdk::ClientCache<Self>) {
                 cards_table::register_table(client_cache);
-        player_profiles_table::register_table(client_cache);
-        players_table::register_table(client_cache);
-        regions_table::register_table(client_cache);
         soul_privates_table::register_table(client_cache);
         souls_table::register_table(client_cache);
-        zones_table::register_table(client_cache);
 }
 const ALL_TABLE_NAMES: &'static [&'static str] = &[
                 "cards",
-        "player_profiles",
-        "players",
-        "regions",
         "soul_privates",
         "souls",
-        "zones",
 ];
 }
