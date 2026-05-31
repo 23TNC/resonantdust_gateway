@@ -15,6 +15,7 @@ use spacetimedb_sdk::__codegen::{
 pub(super) struct SpawnSoulArgs {
     pub client_time_ms: u64,
     pub player_id: u32,
+    pub soul_index: u32,
 }
 
 impl From<SpawnSoulArgs> for super::Reducer {
@@ -22,6 +23,7 @@ impl From<SpawnSoulArgs> for super::Reducer {
         Self::SpawnSoul {
             client_time_ms: args.client_time_ms,
             player_id: args.player_id,
+            soul_index: args.soul_index,
 }
 }
 }
@@ -43,8 +45,9 @@ pub trait spawn_soul {
     /// /// Use [`spawn_soul:spawn_soul_then`] to run a callback after the reducer completes.
     fn spawn_soul(&self, client_time_ms: u64,
 player_id: u32,
+soul_index: u32,
 ) -> __sdk::Result<()> {
-        self.spawn_soul_then(client_time_ms, player_id,  |_, _| {})
+        self.spawn_soul_then(client_time_ms, player_id, soul_index,  |_, _| {})
     }
 
     /// Request that the remote module invoke the reducer `spawn_soul` to run as soon as possible,
@@ -57,6 +60,7 @@ player_id: u32,
         &self,
         client_time_ms: u64,
 player_id: u32,
+soul_index: u32,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
@@ -69,12 +73,13 @@ impl spawn_soul for super::RemoteReducers {
         &self,
         client_time_ms: u64,
 player_id: u32,
+soul_index: u32,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
             + 'static,
     ) -> __sdk::Result<()> {
-        self.imp.invoke_reducer_with_callback(SpawnSoulArgs { client_time_ms, player_id,  }, callback)
+        self.imp.invoke_reducer_with_callback(SpawnSoulArgs { client_time_ms, player_id, soul_index,  }, callback)
     }
 }
 

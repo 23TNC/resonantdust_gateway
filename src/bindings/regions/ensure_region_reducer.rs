@@ -12,47 +12,51 @@ use spacetimedb_sdk::__codegen::{
 
 #[derive(__lib::ser::Serialize, __lib::de::Deserialize, Clone, PartialEq, Debug)]
 #[sats(crate = __lib)]
-pub(super) struct SetLastLoginArgs {
+pub(super) struct EnsureRegionArgs {
     pub client_time_ms: u64,
+    pub macro_zone: u64,
 }
 
-impl From<SetLastLoginArgs> for super::Reducer {
-    fn from(args: SetLastLoginArgs) -> Self {
-        Self::SetLastLogin {
+impl From<EnsureRegionArgs> for super::Reducer {
+    fn from(args: EnsureRegionArgs) -> Self {
+        Self::EnsureRegion {
             client_time_ms: args.client_time_ms,
+            macro_zone: args.macro_zone,
 }
 }
 }
 
-impl __sdk::InModule for SetLastLoginArgs {
+impl __sdk::InModule for EnsureRegionArgs {
     type Module = super::RemoteModule;
 }
 
 #[allow(non_camel_case_types)]
-/// Extension trait for access to the reducer `set_last_login`.
+/// Extension trait for access to the reducer `ensure_region`.
 ///
 /// Implemented for [`super::RemoteReducers`].
-pub trait set_last_login {
-    /// Request that the remote module invoke the reducer `set_last_login` to run as soon as possible.
+pub trait ensure_region {
+    /// Request that the remote module invoke the reducer `ensure_region` to run as soon as possible.
     ///
     /// This method returns immediately, and errors only if we are unable to send the request.
     /// The reducer will run asynchronously in the future,
     ///  and this method provides no way to listen for its completion status.
-    /// /// Use [`set_last_login:set_last_login_then`] to run a callback after the reducer completes.
-    fn set_last_login(&self, client_time_ms: u64,
+    /// /// Use [`ensure_region:ensure_region_then`] to run a callback after the reducer completes.
+    fn ensure_region(&self, client_time_ms: u64,
+macro_zone: u64,
 ) -> __sdk::Result<()> {
-        self.set_last_login_then(client_time_ms,  |_, _| {})
+        self.ensure_region_then(client_time_ms, macro_zone,  |_, _| {})
     }
 
-    /// Request that the remote module invoke the reducer `set_last_login` to run as soon as possible,
+    /// Request that the remote module invoke the reducer `ensure_region` to run as soon as possible,
     /// registering `callback` to run when we are notified that the reducer completed.
     ///
     /// This method returns immediately, and errors only if we are unable to send the request.
     /// The reducer will run asynchronously in the future,
     ///  and its status can be observed with the `callback`.
-    fn set_last_login_then(
+    fn ensure_region_then(
         &self,
         client_time_ms: u64,
+macro_zone: u64,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
@@ -60,16 +64,17 @@ pub trait set_last_login {
     ) -> __sdk::Result<()>;
 }
 
-impl set_last_login for super::RemoteReducers {
-    fn set_last_login_then(
+impl ensure_region for super::RemoteReducers {
+    fn ensure_region_then(
         &self,
         client_time_ms: u64,
+macro_zone: u64,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
             + 'static,
     ) -> __sdk::Result<()> {
-        self.imp.invoke_reducer_with_callback(SetLastLoginArgs { client_time_ms,  }, callback)
+        self.imp.invoke_reducer_with_callback(EnsureRegionArgs { client_time_ms, macro_zone,  }, callback)
     }
 }
 

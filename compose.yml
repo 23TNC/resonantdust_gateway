@@ -14,10 +14,30 @@ services:
     networks:
       - resonantdust
     ports:
-      - "8080:8080"
+      - "8473:8473"
     volumes:
       - .:/workspace
     working_dir: /workspace
+    command: ["sleep", "infinity"]
+
+  # Parallel gateway pinned to the `claude` environment (its own
+  # `resonantdust-claude-*` databases) on port 8474, so agent-side testing can
+  # publish / wipe / drive recipes in full isolation from the `dev` gate above.
+  # Same image / bind-mount / shared binary; `GATE_ENV` + `GATE_LISTEN` point it
+  # at the claude DBs and its own port. Drive it with `GATE_ENV=claude bin/gate
+  # <cmd>` (logs to gateway/gate-claude.log).
+  gate-claude:
+    image: rust:slim
+    networks:
+      - resonantdust
+    ports:
+      - "8474:8474"
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    environment:
+      GATE_ENV: "claude"
+      GATE_LISTEN: "0.0.0.0:8474"
     command: ["sleep", "infinity"]
 
   # One-shot release build. `bin/gate build` invokes this with

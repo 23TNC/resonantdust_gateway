@@ -12,51 +12,55 @@ use spacetimedb_sdk::__codegen::{
 
 #[derive(__lib::ser::Serialize, __lib::de::Deserialize, Clone, PartialEq, Debug)]
 #[sats(crate = __lib)]
-pub(super) struct GenerateForestTerrainArgs {
-    pub seed: u64,
-    pub radius: i16,
+pub(super) struct FinalizeCardArgs {
+    pub card_id: u32,
+    pub time_ms: u64,
+    pub progress_style: u8,
 }
 
-impl From<GenerateForestTerrainArgs> for super::Reducer {
-    fn from(args: GenerateForestTerrainArgs) -> Self {
-        Self::GenerateForestTerrain {
-            seed: args.seed,
-            radius: args.radius,
+impl From<FinalizeCardArgs> for super::Reducer {
+    fn from(args: FinalizeCardArgs) -> Self {
+        Self::FinalizeCard {
+            card_id: args.card_id,
+            time_ms: args.time_ms,
+            progress_style: args.progress_style,
 }
 }
 }
 
-impl __sdk::InModule for GenerateForestTerrainArgs {
+impl __sdk::InModule for FinalizeCardArgs {
     type Module = super::RemoteModule;
 }
 
 #[allow(non_camel_case_types)]
-/// Extension trait for access to the reducer `generate_forest_terrain`.
+/// Extension trait for access to the reducer `finalize_card`.
 ///
 /// Implemented for [`super::RemoteReducers`].
-pub trait generate_forest_terrain {
-    /// Request that the remote module invoke the reducer `generate_forest_terrain` to run as soon as possible.
+pub trait finalize_card {
+    /// Request that the remote module invoke the reducer `finalize_card` to run as soon as possible.
     ///
     /// This method returns immediately, and errors only if we are unable to send the request.
     /// The reducer will run asynchronously in the future,
     ///  and this method provides no way to listen for its completion status.
-    /// /// Use [`generate_forest_terrain:generate_forest_terrain_then`] to run a callback after the reducer completes.
-    fn generate_forest_terrain(&self, seed: u64,
-radius: i16,
+    /// /// Use [`finalize_card:finalize_card_then`] to run a callback after the reducer completes.
+    fn finalize_card(&self, card_id: u32,
+time_ms: u64,
+progress_style: u8,
 ) -> __sdk::Result<()> {
-        self.generate_forest_terrain_then(seed, radius,  |_, _| {})
+        self.finalize_card_then(card_id, time_ms, progress_style,  |_, _| {})
     }
 
-    /// Request that the remote module invoke the reducer `generate_forest_terrain` to run as soon as possible,
+    /// Request that the remote module invoke the reducer `finalize_card` to run as soon as possible,
     /// registering `callback` to run when we are notified that the reducer completed.
     ///
     /// This method returns immediately, and errors only if we are unable to send the request.
     /// The reducer will run asynchronously in the future,
     ///  and its status can be observed with the `callback`.
-    fn generate_forest_terrain_then(
+    fn finalize_card_then(
         &self,
-        seed: u64,
-radius: i16,
+        card_id: u32,
+time_ms: u64,
+progress_style: u8,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
@@ -64,17 +68,18 @@ radius: i16,
     ) -> __sdk::Result<()>;
 }
 
-impl generate_forest_terrain for super::RemoteReducers {
-    fn generate_forest_terrain_then(
+impl finalize_card for super::RemoteReducers {
+    fn finalize_card_then(
         &self,
-        seed: u64,
-radius: i16,
+        card_id: u32,
+time_ms: u64,
+progress_style: u8,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
             + 'static,
     ) -> __sdk::Result<()> {
-        self.imp.invoke_reducer_with_callback(GenerateForestTerrainArgs { seed, radius,  }, callback)
+        self.imp.invoke_reducer_with_callback(FinalizeCardArgs { card_id, time_ms, progress_style,  }, callback)
     }
 }
 

@@ -4,10 +4,18 @@
 
 use resonantdust_content::packed;
 
-/// The `cards` shard that owns `card_id` (the top 12 bits of the u32). The
-/// gate routes card lookups by this directly — no index needed.
+/// Which database holds `card_id`: `CARD_DB_CARDS` (0, the owner-sharded real
+/// cards) or `CARD_DB_REGIONS` (1, the position-sharded tile-cards) — the top
+/// bit of the id. Combined with [`card_shard`] this picks the exact upstream
+/// (`pool.cards(shard)` vs `pool.regions(shard)`) with no index lookup.
+pub fn card_db(card_id: u32) -> u8 {
+    packed::card_db_of(card_id)
+}
+
+/// The shard that owns `card_id` WITHIN its database (0..2047, the 11-bit shard
+/// field). Pair with [`card_db`] to route.
 pub fn card_shard(card_id: u32) -> u16 {
-    packed::card_shard_of(card_id)
+    packed::card_shard_within_db(card_id)
 }
 
 /// Map a zone's `macro_zone` to `(macro_region, intra_region_bit)`. The
@@ -19,12 +27,20 @@ pub fn region_of_zone(macro_zone: u64) -> (u64, u8) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use resonantdust_content::packed::pack_card_id;
+    use resonantdust_content::packed::{pack_card_id, CARD_DB_CARDS, CARD_DB_REGIONS};
 
     #[test]
-    fn card_shard_reads_top_bits() {
-        assert_eq!(card_shard(pack_card_id(1, 1024)), 1);
-        assert_eq!(card_shard(pack_card_id(7, 5)), 7);
+    fn card_routing_reads_id() {
+        // cards DB, shard 1.
+        let id = pack_card_id(CARD_DB_CARDS, 1, 1024);
+        assert_eq!(card_db(id), CARD_DB_CARDS);
+        assert_eq!(card_shard(id), 1);
+        // regions DB (tile-card), shard 7.
+        let id = pack_card_id(CARD_DB_REGIONS, 7, 5);
+        assert_eq!(card_db(id), CARD_DB_REGIONS);
+        assert_eq!(card_shard(id), 7);
+        // sentinel → cards DB, shard 0.
+        assert_eq!(card_db(0), CARD_DB_CARDS);
         assert_eq!(card_shard(0), 0);
     }
 }

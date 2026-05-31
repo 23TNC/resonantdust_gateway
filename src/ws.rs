@@ -14,14 +14,15 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
 use axum::response::Response;
 use futures_util::{SinkExt, StreamExt};
-use spacetimedb_sdk::{DbContext, Table};
+use spacetimedb_sdk::{DbContext, Table, TableWithPrimaryKey};
 use tokio::sync::mpsc::{self, UnboundedSender};
-use tracing::{info, info_span, warn, Instrument};
+use tracing::{debug, info, info_span, warn, Instrument};
 
 use crate::bindings;
 use crate::connections::Pool;
@@ -51,15 +52,15 @@ async fn run(socket: WebSocket, pool: Arc<Pool>) {
         let _ = sink.close().await;
     });
 
-    // Warm the shard upstream up front so the first request doesn't pay it.
-    if pool.shard().is_none() {
-        let _ = tx.send(
-            GateMsg::Error {
-                error: "shard upstream unavailable".to_string(),
-            }
-            .to_json(),
-        );
-    }
+    // This client's own upstream connections — one per backing database the
+    // gate fronts: `shard` (cards/souls/…) and `regions` (zones/regions). Both
+    // need per-client isolation: SpacetimeDB subscriptions are set-semantics, so
+    // a shared upstream silently drops initial rows for a second subscriber.
+    // Wait for both to connect before serving subscriptions — subscribing on a
+    // not-yet-open connection loses the initial rows. Client `sub` frames buffer
+    // in the WS stream meanwhile.
+    let upstream_regions = await_ready(pool.fresh_regions(), &tx, "regions").await;
+    let upstream_cards = await_ready(pool.fresh_cards(), &tx, "cards").await;
 
     while let Some(frame) = stream.next().await {
         let msg = match frame {
@@ -71,7 +72,16 @@ async fn run(socket: WebSocket, pool: Arc<Pool>) {
         };
         match msg {
             Message::Text(text) => match serde_json::from_str::<ClientMsg>(&text) {
-                Ok(cmsg) => handle(&pool, &tx, cmsg).await,
+                Ok(cmsg) => {
+                    handle(
+                        &pool,
+                        upstream_regions.as_ref(),
+                        upstream_cards.as_ref(),
+                        &tx,
+                        cmsg,
+                    )
+                    .await
+                }
                 Err(err) => {
                     let _ = tx.send(
                         GateMsg::Error {
@@ -86,28 +96,129 @@ async fn run(socket: WebSocket, pool: Arc<Pool>) {
         }
     }
 
+    // Tear down this client's upstreams so its subscriptions/cache don't linger
+    // (otherwise a later client subscribing to the same rows would find them
+    // already cached and receive nothing).
+    if let Some(conn) = &upstream_regions {
+        let _ = conn.disconnect();
+    }
+    if let Some(conn) = &upstream_cards {
+        let _ = conn.disconnect();
+    }
     drop(tx);
     let _ = forward.await;
     info!("client disconnected");
 }
 
-async fn handle(pool: &Arc<Pool>, tx: &UnboundedSender<String>, msg: ClientMsg) {
+/// Await a freshly-built per-client upstream's readiness oneshot (5s budget),
+/// emitting a client-visible error and yielding `None` on miss. Generic over
+/// the connection type so `shard` and `regions` upstreams share one path.
+async fn await_ready<T>(
+    built: Option<(T, tokio::sync::oneshot::Receiver<()>)>,
+    tx: &UnboundedSender<String>,
+    what: &str,
+) -> Option<T> {
+    match built {
+        Some((conn, ready)) => match tokio::time::timeout(Duration::from_secs(5), ready).await {
+            Ok(Ok(())) => Some(conn),
+            _ => {
+                let _ = tx.send(
+                    GateMsg::Error {
+                        error: format!("{what} upstream connect timed out"),
+                    }
+                    .to_json(),
+                );
+                None
+            }
+        },
+        None => {
+            let _ = tx.send(
+                GateMsg::Error {
+                    error: format!("{what} upstream unavailable"),
+                }
+                .to_json(),
+            );
+            None
+        }
+    }
+}
+
+async fn handle(
+    pool: &Arc<Pool>,
+    upstream_regions: Option<&Arc<bindings::regions::DbConnection>>,
+    upstream_cards: Option<&Arc<bindings::cards::DbConnection>>,
+    tx: &UnboundedSender<String>,
+    msg: ClientMsg,
+) {
     match msg {
-        ClientMsg::Sub { sid, table, filter } => subscribe(pool, tx, sid, &table, filter.as_deref()),
+        ClientMsg::Sub { sid, table, filter } => subscribe(
+            upstream_regions,
+            upstream_cards,
+            tx,
+            sid,
+            &table,
+            filter.as_deref(),
+        ),
         ClientMsg::Unsub { sid } => {
-            // MVP: callbacks aren't torn down yet.
+            // MVP: per-sub teardown not wired; the upstream drops on disconnect.
             info!(sid, "unsub (no-op for now)");
         }
-        ClientMsg::Call { cid, reducer, args } => relay_call(pool, tx, cid, &reducer, args).await,
+        ClientMsg::Call { cid, reducer, args } => {
+            // `propose_action` is no longer a relay — the gate validates the
+            // recipe across shards and applies it via narrow reducer calls.
+            if reducer == "propose_action" {
+                crate::propose::handle(pool, tx, cid, args).await;
+            } else {
+                relay_call(pool, tx, cid, &reducer, args).await;
+            }
+        }
     }
 }
 
 // ---- reads: subscribe a shard table, fan rows back -------------------
 
 /// Serialize a generated (sats-`Serialize`) shard row to JSON for the client.
+/// Two normalizations so the payload drops into the client's generated TS row
+/// types: keys are camelCased (the sats bridge emits Rust snake_case), and
+/// every number is stringified — u64 fields (`valid_at`, `macro_zone`, …)
+/// exceed JS's safe-integer range, so they ride the wire as strings and the
+/// client coerces them to `bigint`/`number` per field.
 fn row_json<T: spacetimedb_sats::ser::Serialize + ?Sized>(row: &T) -> serde_json::Value {
-    spacetimedb_sats::ser::serde::serialize_to(row, serde_json::value::Serializer)
-        .unwrap_or(serde_json::Value::Null)
+    let raw = spacetimedb_sats::ser::serde::serialize_to(row, serde_json::value::Serializer)
+        .unwrap_or(serde_json::Value::Null);
+    normalize(raw)
+}
+
+/// Recursively camelCase object keys and stringify numbers (lossless transit
+/// for 64-bit ints).
+fn normalize(value: serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match value {
+        Value::Object(map) => Value::Object(
+            map.into_iter()
+                .map(|(k, v)| (to_camel(&k), normalize(v)))
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(items.into_iter().map(normalize).collect()),
+        Value::Number(n) => Value::String(n.to_string()),
+        other => other,
+    }
+}
+
+fn to_camel(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut upper_next = false;
+    for c in s.chars() {
+        if c == '_' {
+            upper_next = true;
+        } else if upper_next {
+            out.extend(c.to_uppercase());
+            upper_next = false;
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// Register insert/delete callbacks for one shard table that push [`GateMsg::Row`]
@@ -123,7 +234,21 @@ macro_rules! relay_table {
                     sid: $sid,
                     table: $name.to_string(),
                     op: "insert",
+                    old: None,
                     row: row_json(row),
+                }
+                .to_json(),
+            );
+        });
+        let tx_upd = $tx.clone();
+        conn.db().$accessor().on_update(move |_ctx, old, new| {
+            let _ = tx_upd.send(
+                GateMsg::Row {
+                    sid: $sid,
+                    table: $name.to_string(),
+                    op: "update",
+                    old: Some(row_json(old)),
+                    row: row_json(new),
                 }
                 .to_json(),
             );
@@ -135,6 +260,7 @@ macro_rules! relay_table {
                     sid: $sid,
                     table: $name.to_string(),
                     op: "delete",
+                    old: None,
                     row: row_json(row),
                 }
                 .to_json(),
@@ -143,27 +269,88 @@ macro_rules! relay_table {
     }};
 }
 
+/// Issue the upstream subscription for `query` on `$conn` and wire its
+/// applied/error callbacks back to the client. Split out from [`relay_table!`]
+/// because the two upstreams (`shard`, `regions`) are distinct connection
+/// types; both expose `subscription_builder()` via `DbContext`.
+macro_rules! issue_sub {
+    ($conn:expr, $tx:expr, $sid:expr, $query:expr) => {{
+        let sid = $sid;
+        let query = $query;
+        debug!(sid, %query, "issuing upstream subscription");
+        let tx_applied = $tx.clone();
+        let tx_err = $tx.clone();
+        $conn
+            .subscription_builder()
+            .on_applied(move |_ctx| {
+                debug!(sid, "upstream subscription applied");
+                let _ = tx_applied.send(GateMsg::Applied { sid }.to_json());
+            })
+            .on_error(move |_ctx, err| {
+                let _ = tx_err.send(
+                    GateMsg::Error {
+                        error: format!("sub {sid}: {err}"),
+                    }
+                    .to_json(),
+                );
+            })
+            .subscribe([query]);
+    }};
+}
+
+/// Route a table to its owning upstream: register row callbacks + issue the
+/// subscription on `$opt` (an `Option<&Arc<DbConnection>>`), or emit a
+/// client-visible error if that upstream isn't connected.
+macro_rules! route {
+    ($opt:expr, $what:literal, $access:path, $accessor:ident, $name:literal, $tx:expr, $sid:expr, $query:expr) => {{
+        match $opt {
+            Some(conn) => {
+                relay_table!(conn, $tx, $sid, $access, $accessor, $name);
+                issue_sub!(conn, $tx, $sid, $query);
+            }
+            None => {
+                let _ = $tx.send(
+                    GateMsg::Error {
+                        error: format!("{} upstream unavailable", $what),
+                    }
+                    .to_json(),
+                );
+            }
+        }
+    }};
+}
+
+/// Fan a client subscription to the upstream that owns the table. `zones` and
+/// `regions` live in the `regions` module's database; `cards`/`souls`/
+/// `soul_privates` are still in the `shard` monolith. The client is oblivious —
+/// it subscribes by table name and the gate picks the backing connection.
 fn subscribe(
-    pool: &Arc<Pool>,
+    regions: Option<&Arc<bindings::regions::DbConnection>>,
+    cards: Option<&Arc<bindings::cards::DbConnection>>,
     tx: &UnboundedSender<String>,
     sid: u32,
     table: &str,
     filter: Option<&str>,
 ) {
-    let Some(conn) = pool.shard() else {
-        let _ = tx.send(
-            GateMsg::Error {
-                error: "shard upstream unavailable".to_string(),
-            }
-            .to_json(),
-        );
-        return;
+    // The client addresses the regions DB's `cards` table (tile-cards) under the
+    // logical name `tile_cards` so it doesn't collide with the cards DB's `cards`
+    // table; the upstream query still targets the real table name (`cards`).
+    let upstream_table = if table == "tile_cards" { "cards" } else { table };
+    let query = match filter {
+        Some(f) => format!("SELECT * FROM {upstream_table} WHERE {f}"),
+        None => format!("SELECT * FROM {upstream_table}"),
     };
-
     match table {
-        "zones" => relay_table!(conn, tx, sid, bindings::shard::zones_table::ZonesTableAccess, zones, "zones"),
-        "cards" => relay_table!(conn, tx, sid, bindings::shard::cards_table::CardsTableAccess, cards, "cards"),
-        "souls" => relay_table!(conn, tx, sid, bindings::shard::souls_table::SoulsTableAccess, souls, "souls"),
+        // region-owned tables → the per-client `regions` upstream
+        "zones" => route!(regions, "regions", bindings::regions::zones_table::ZonesTableAccess, zones, "zones", tx, sid, query),
+        "regions" => route!(regions, "regions", bindings::regions::regions_table::RegionsTableAccess, regions, "regions", tx, sid, query),
+        // regions-DB tile-cards (the regions module's own `cards` table) → the
+        // `regions` upstream, surfaced to the client as `tile_cards`.
+        "tile_cards" => route!(regions, "regions", bindings::regions::cards_table::CardsTableAccess, cards, "tile_cards", tx, sid, query),
+        // card-owned tables → the per-client `cards` upstream
+        "cards" => route!(cards, "cards", bindings::cards::cards_table::CardsTableAccess, cards, "cards", tx, sid, query),
+        "souls" => route!(cards, "cards", bindings::cards::souls_table::SoulsTableAccess, souls, "souls", tx, sid, query),
+        "soul_privates" => route!(cards, "cards", bindings::cards::soul_privates_table::SoulPrivatesTableAccess, soul_privates, "soul_privates", tx, sid, query),
         other => {
             let _ = tx.send(
                 GateMsg::Error {
@@ -171,32 +358,11 @@ fn subscribe(
                 }
                 .to_json(),
             );
-            return;
         }
     }
-
-    let query = match filter {
-        Some(f) => format!("SELECT * FROM {table} WHERE {f}"),
-        None => format!("SELECT * FROM {table}"),
-    };
-    let tx_applied = tx.clone();
-    let tx_err = tx.clone();
-    conn.subscription_builder()
-        .on_applied(move |_ctx| {
-            let _ = tx_applied.send(GateMsg::Applied { sid }.to_json());
-        })
-        .on_error(move |_ctx, err| {
-            let _ = tx_err.send(
-                GateMsg::Error {
-                    error: format!("sub {sid}: {err}"),
-                }
-                .to_json(),
-            );
-        })
-        .subscribe([query]);
 }
 
-// ---- writes: relay a reducer call to shard ---------------------------
+// ---- writes: relay a reducer call to its owning database -------------
 
 async fn relay_call(
     pool: &Arc<Pool>,
@@ -205,20 +371,29 @@ async fn relay_call(
     reducer: &str,
     args: serde_json::Value,
 ) {
-    // Ensure the upstream (and thus the auth token) is established.
-    let _ = pool.shard();
-    let url = format!(
-        "{}/v1/database/{}/call/{}",
-        pool.server_uri(),
-        pool.shard_db(),
-        reducer
-    );
-    let mut req = reqwest::Client::new().post(&url).json(&args);
-    if let Some(token) = pool.shard_token() {
-        req = req.bearer_auth(token);
-    }
-
-    let reply = match req.send().await {
+    // Route the reducer to the database that owns it. The relay is anonymous —
+    // gate-called reducers trust their args (auth is the gate's job), so
+    // `ctx.sender` is immaterial and no bearer token is needed. `propose_action`
+    // never reaches here (it's intercepted by `propose::handle`).
+    let db = match reducer {
+        "request_zone" | "ensure_region" => pool.regions_db(),
+        "spawn_soul" | "add_card" | "place_card" | "request_blueprint" | "move_soul" => {
+            pool.cards_db()
+        }
+        other => {
+            // Nothing routes to the retired `shard` monolith anymore.
+            let _ = tx.send(
+                GateMsg::CallErr {
+                    cid,
+                    error: format!("gate: no backing database for reducer {other:?}"),
+                }
+                .to_json(),
+            );
+            return;
+        }
+    };
+    let url = format!("{}/v1/database/{}/call/{}", pool.server_uri(), db, reducer);
+    let reply = match reqwest::Client::new().post(&url).json(&args).send().await {
         Ok(resp) if resp.status().is_success() => GateMsg::CallOk { cid },
         Ok(resp) => {
             let code = resp.status();

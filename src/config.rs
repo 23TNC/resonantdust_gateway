@@ -37,24 +37,9 @@ impl GateConfig {
         format!("resonantdust-{}-regions-{}", self.env, shard)
     }
 
-    /// The `players` auth/index database (single instance today, shard 0).
-    pub fn players_db(&self) -> String {
-        format!("resonantdust-{}-players-0", self.env)
-    }
-
     /// The `regionindex` database mapping a region → its `regions` shard.
+    /// Single instance today (shard 0).
     pub fn regions_index_db(&self) -> String {
-        format!("resonantdust-{}-regionindex", self.env)
-    }
-
-    /// The self-contained world-`chat` database.
-    pub fn chat_db(&self) -> String {
-        format!("resonantdust-{}-chat", self.env)
-    }
-
-    /// The legacy monolith `shard` database — the gate's relay target while the
-    /// modules are still being split out.
-    pub fn shard_db(&self) -> String {
-        format!("resonantdust-{}-shard", self.env)
+        format!("resonantdust-{}-regionindex-0", self.env)
     }
 }

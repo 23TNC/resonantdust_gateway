@@ -9,58 +9,63 @@ use spacetimedb_sdk::__codegen::{
 	__ws,
 };
 
+use super::placement_type::Placement;
 
 #[derive(__lib::ser::Serialize, __lib::de::Deserialize, Clone, PartialEq, Debug)]
 #[sats(crate = __lib)]
-pub(super) struct SpawnSoulArgs {
+pub(super) struct PlaceCardArgs {
     pub client_time_ms: u64,
-    pub player_id: u32,
-    pub soul_index: u32,
+    pub caller_player_id: u32,
+    pub card_id: u32,
+    pub placement: Placement,
 }
 
-impl From<SpawnSoulArgs> for super::Reducer {
-    fn from(args: SpawnSoulArgs) -> Self {
-        Self::SpawnSoul {
+impl From<PlaceCardArgs> for super::Reducer {
+    fn from(args: PlaceCardArgs) -> Self {
+        Self::PlaceCard {
             client_time_ms: args.client_time_ms,
-            player_id: args.player_id,
-            soul_index: args.soul_index,
+            caller_player_id: args.caller_player_id,
+            card_id: args.card_id,
+            placement: args.placement,
 }
 }
 }
 
-impl __sdk::InModule for SpawnSoulArgs {
+impl __sdk::InModule for PlaceCardArgs {
     type Module = super::RemoteModule;
 }
 
 #[allow(non_camel_case_types)]
-/// Extension trait for access to the reducer `spawn_soul`.
+/// Extension trait for access to the reducer `place_card`.
 ///
 /// Implemented for [`super::RemoteReducers`].
-pub trait spawn_soul {
-    /// Request that the remote module invoke the reducer `spawn_soul` to run as soon as possible.
+pub trait place_card {
+    /// Request that the remote module invoke the reducer `place_card` to run as soon as possible.
     ///
     /// This method returns immediately, and errors only if we are unable to send the request.
     /// The reducer will run asynchronously in the future,
     ///  and this method provides no way to listen for its completion status.
-    /// /// Use [`spawn_soul:spawn_soul_then`] to run a callback after the reducer completes.
-    fn spawn_soul(&self, client_time_ms: u64,
-player_id: u32,
-soul_index: u32,
+    /// /// Use [`place_card:place_card_then`] to run a callback after the reducer completes.
+    fn place_card(&self, client_time_ms: u64,
+caller_player_id: u32,
+card_id: u32,
+placement: Placement,
 ) -> __sdk::Result<()> {
-        self.spawn_soul_then(client_time_ms, player_id, soul_index,  |_, _| {})
+        self.place_card_then(client_time_ms, caller_player_id, card_id, placement,  |_, _| {})
     }
 
-    /// Request that the remote module invoke the reducer `spawn_soul` to run as soon as possible,
+    /// Request that the remote module invoke the reducer `place_card` to run as soon as possible,
     /// registering `callback` to run when we are notified that the reducer completed.
     ///
     /// This method returns immediately, and errors only if we are unable to send the request.
     /// The reducer will run asynchronously in the future,
     ///  and its status can be observed with the `callback`.
-    fn spawn_soul_then(
+    fn place_card_then(
         &self,
         client_time_ms: u64,
-player_id: u32,
-soul_index: u32,
+caller_player_id: u32,
+card_id: u32,
+placement: Placement,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
@@ -68,18 +73,19 @@ soul_index: u32,
     ) -> __sdk::Result<()>;
 }
 
-impl spawn_soul for super::RemoteReducers {
-    fn spawn_soul_then(
+impl place_card for super::RemoteReducers {
+    fn place_card_then(
         &self,
         client_time_ms: u64,
-player_id: u32,
-soul_index: u32,
+caller_player_id: u32,
+card_id: u32,
+placement: Placement,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
             + 'static,
     ) -> __sdk::Result<()> {
-        self.imp.invoke_reducer_with_callback(SpawnSoulArgs { client_time_ms, player_id, soul_index,  }, callback)
+        self.imp.invoke_reducer_with_callback(PlaceCardArgs { client_time_ms, caller_player_id, card_id, placement,  }, callback)
     }
 }
 

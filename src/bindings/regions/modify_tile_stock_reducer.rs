@@ -12,51 +12,75 @@ use spacetimedb_sdk::__codegen::{
 
 #[derive(__lib::ser::Serialize, __lib::de::Deserialize, Clone, PartialEq, Debug)]
 #[sats(crate = __lib)]
-pub(super) struct RequestZoneArgs {
-    pub client_time_ms: u64,
+pub(super) struct ModifyTileStockArgs {
+    pub time_ms: u64,
+    pub surface: u8,
     pub macro_zone: u64,
+    pub q: u8,
+    pub r: u8,
+    pub slot: u8,
+    pub op: u8,
+    pub delta: u8,
 }
 
-impl From<RequestZoneArgs> for super::Reducer {
-    fn from(args: RequestZoneArgs) -> Self {
-        Self::RequestZone {
-            client_time_ms: args.client_time_ms,
+impl From<ModifyTileStockArgs> for super::Reducer {
+    fn from(args: ModifyTileStockArgs) -> Self {
+        Self::ModifyTileStock {
+            time_ms: args.time_ms,
+            surface: args.surface,
             macro_zone: args.macro_zone,
+            q: args.q,
+            r: args.r,
+            slot: args.slot,
+            op: args.op,
+            delta: args.delta,
 }
 }
 }
 
-impl __sdk::InModule for RequestZoneArgs {
+impl __sdk::InModule for ModifyTileStockArgs {
     type Module = super::RemoteModule;
 }
 
 #[allow(non_camel_case_types)]
-/// Extension trait for access to the reducer `request_zone`.
+/// Extension trait for access to the reducer `modify_tile_stock`.
 ///
 /// Implemented for [`super::RemoteReducers`].
-pub trait request_zone {
-    /// Request that the remote module invoke the reducer `request_zone` to run as soon as possible.
+pub trait modify_tile_stock {
+    /// Request that the remote module invoke the reducer `modify_tile_stock` to run as soon as possible.
     ///
     /// This method returns immediately, and errors only if we are unable to send the request.
     /// The reducer will run asynchronously in the future,
     ///  and this method provides no way to listen for its completion status.
-    /// /// Use [`request_zone:request_zone_then`] to run a callback after the reducer completes.
-    fn request_zone(&self, client_time_ms: u64,
+    /// /// Use [`modify_tile_stock:modify_tile_stock_then`] to run a callback after the reducer completes.
+    fn modify_tile_stock(&self, time_ms: u64,
+surface: u8,
 macro_zone: u64,
+q: u8,
+r: u8,
+slot: u8,
+op: u8,
+delta: u8,
 ) -> __sdk::Result<()> {
-        self.request_zone_then(client_time_ms, macro_zone,  |_, _| {})
+        self.modify_tile_stock_then(time_ms, surface, macro_zone, q, r, slot, op, delta,  |_, _| {})
     }
 
-    /// Request that the remote module invoke the reducer `request_zone` to run as soon as possible,
+    /// Request that the remote module invoke the reducer `modify_tile_stock` to run as soon as possible,
     /// registering `callback` to run when we are notified that the reducer completed.
     ///
     /// This method returns immediately, and errors only if we are unable to send the request.
     /// The reducer will run asynchronously in the future,
     ///  and its status can be observed with the `callback`.
-    fn request_zone_then(
+    fn modify_tile_stock_then(
         &self,
-        client_time_ms: u64,
+        time_ms: u64,
+surface: u8,
 macro_zone: u64,
+q: u8,
+r: u8,
+slot: u8,
+op: u8,
+delta: u8,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
@@ -64,17 +88,23 @@ macro_zone: u64,
     ) -> __sdk::Result<()>;
 }
 
-impl request_zone for super::RemoteReducers {
-    fn request_zone_then(
+impl modify_tile_stock for super::RemoteReducers {
+    fn modify_tile_stock_then(
         &self,
-        client_time_ms: u64,
+        time_ms: u64,
+surface: u8,
 macro_zone: u64,
+q: u8,
+r: u8,
+slot: u8,
+op: u8,
+delta: u8,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
             + 'static,
     ) -> __sdk::Result<()> {
-        self.imp.invoke_reducer_with_callback(RequestZoneArgs { client_time_ms, macro_zone,  }, callback)
+        self.imp.invoke_reducer_with_callback(ModifyTileStockArgs { time_ms, surface, macro_zone, q, r, slot, op, delta,  }, callback)
     }
 }
 

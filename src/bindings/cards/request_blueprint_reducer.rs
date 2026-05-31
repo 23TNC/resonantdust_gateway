@@ -12,71 +12,71 @@ use spacetimedb_sdk::__codegen::{
 
 #[derive(__lib::ser::Serialize, __lib::de::Deserialize, Clone, PartialEq, Debug)]
 #[sats(crate = __lib)]
-pub(super) struct ProposeActionArgs {
+pub(super) struct RequestBlueprintArgs {
     pub client_time_ms: u64,
-    pub recipe_id: u16,
+    pub caller_player_id: u32,
+    pub soul_card_id: u32,
+    pub blueprint_id: u16,
     pub surface: u8,
     pub macro_zone: u64,
     pub micro_location: u32,
-    pub root: u32,
-    pub bindings: Vec::<Vec::<u32>>,
 }
 
-impl From<ProposeActionArgs> for super::Reducer {
-    fn from(args: ProposeActionArgs) -> Self {
-        Self::ProposeAction {
+impl From<RequestBlueprintArgs> for super::Reducer {
+    fn from(args: RequestBlueprintArgs) -> Self {
+        Self::RequestBlueprint {
             client_time_ms: args.client_time_ms,
-            recipe_id: args.recipe_id,
+            caller_player_id: args.caller_player_id,
+            soul_card_id: args.soul_card_id,
+            blueprint_id: args.blueprint_id,
             surface: args.surface,
             macro_zone: args.macro_zone,
             micro_location: args.micro_location,
-            root: args.root,
-            bindings: args.bindings,
 }
 }
 }
 
-impl __sdk::InModule for ProposeActionArgs {
+impl __sdk::InModule for RequestBlueprintArgs {
     type Module = super::RemoteModule;
 }
 
 #[allow(non_camel_case_types)]
-/// Extension trait for access to the reducer `propose_action`.
+/// Extension trait for access to the reducer `request_blueprint`.
 ///
 /// Implemented for [`super::RemoteReducers`].
-pub trait propose_action {
-    /// Request that the remote module invoke the reducer `propose_action` to run as soon as possible.
+pub trait request_blueprint {
+    /// Request that the remote module invoke the reducer `request_blueprint` to run as soon as possible.
     ///
     /// This method returns immediately, and errors only if we are unable to send the request.
     /// The reducer will run asynchronously in the future,
     ///  and this method provides no way to listen for its completion status.
-    /// /// Use [`propose_action:propose_action_then`] to run a callback after the reducer completes.
-    fn propose_action(&self, client_time_ms: u64,
-recipe_id: u16,
+    /// /// Use [`request_blueprint:request_blueprint_then`] to run a callback after the reducer completes.
+    fn request_blueprint(&self, client_time_ms: u64,
+caller_player_id: u32,
+soul_card_id: u32,
+blueprint_id: u16,
 surface: u8,
 macro_zone: u64,
 micro_location: u32,
-root: u32,
-bindings: Vec::<Vec::<u32>>,
 ) -> __sdk::Result<()> {
-        self.propose_action_then(client_time_ms, recipe_id, surface, macro_zone, micro_location, root, bindings,  |_, _| {})
+        self.request_blueprint_then(client_time_ms, caller_player_id, soul_card_id, blueprint_id, surface, macro_zone, micro_location,  |_, _| {})
     }
 
-    /// Request that the remote module invoke the reducer `propose_action` to run as soon as possible,
+    /// Request that the remote module invoke the reducer `request_blueprint` to run as soon as possible,
     /// registering `callback` to run when we are notified that the reducer completed.
     ///
     /// This method returns immediately, and errors only if we are unable to send the request.
     /// The reducer will run asynchronously in the future,
     ///  and its status can be observed with the `callback`.
-    fn propose_action_then(
+    fn request_blueprint_then(
         &self,
         client_time_ms: u64,
-recipe_id: u16,
+caller_player_id: u32,
+soul_card_id: u32,
+blueprint_id: u16,
 surface: u8,
 macro_zone: u64,
 micro_location: u32,
-root: u32,
-bindings: Vec::<Vec::<u32>>,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
@@ -84,22 +84,22 @@ bindings: Vec::<Vec::<u32>>,
     ) -> __sdk::Result<()>;
 }
 
-impl propose_action for super::RemoteReducers {
-    fn propose_action_then(
+impl request_blueprint for super::RemoteReducers {
+    fn request_blueprint_then(
         &self,
         client_time_ms: u64,
-recipe_id: u16,
+caller_player_id: u32,
+soul_card_id: u32,
+blueprint_id: u16,
 surface: u8,
 macro_zone: u64,
 micro_location: u32,
-root: u32,
-bindings: Vec::<Vec::<u32>>,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
             + 'static,
     ) -> __sdk::Result<()> {
-        self.imp.invoke_reducer_with_callback(ProposeActionArgs { client_time_ms, recipe_id, surface, macro_zone, micro_location, root, bindings,  }, callback)
+        self.imp.invoke_reducer_with_callback(RequestBlueprintArgs { client_time_ms, caller_player_id, soul_card_id, blueprint_id, surface, macro_zone, micro_location,  }, callback)
     }
 }
 

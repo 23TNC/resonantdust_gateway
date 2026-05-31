@@ -9,59 +9,66 @@ use spacetimedb_sdk::__codegen::{
 	__ws,
 };
 
-use super::placement_type::Placement;
 
 #[derive(__lib::ser::Serialize, __lib::de::Deserialize, Clone, PartialEq, Debug)]
 #[sats(crate = __lib)]
-pub(super) struct PlaceCardArgs {
-    pub client_time_ms: u64,
+pub(super) struct MoveCardArgs {
     pub card_id: u32,
-    pub placement: Placement,
+    pub time_ms: u64,
+    pub surface: u8,
+    pub macro_zone: u64,
+    pub micro_location: u32,
 }
 
-impl From<PlaceCardArgs> for super::Reducer {
-    fn from(args: PlaceCardArgs) -> Self {
-        Self::PlaceCard {
-            client_time_ms: args.client_time_ms,
+impl From<MoveCardArgs> for super::Reducer {
+    fn from(args: MoveCardArgs) -> Self {
+        Self::MoveCard {
             card_id: args.card_id,
-            placement: args.placement,
+            time_ms: args.time_ms,
+            surface: args.surface,
+            macro_zone: args.macro_zone,
+            micro_location: args.micro_location,
 }
 }
 }
 
-impl __sdk::InModule for PlaceCardArgs {
+impl __sdk::InModule for MoveCardArgs {
     type Module = super::RemoteModule;
 }
 
 #[allow(non_camel_case_types)]
-/// Extension trait for access to the reducer `place_card`.
+/// Extension trait for access to the reducer `move_card`.
 ///
 /// Implemented for [`super::RemoteReducers`].
-pub trait place_card {
-    /// Request that the remote module invoke the reducer `place_card` to run as soon as possible.
+pub trait move_card {
+    /// Request that the remote module invoke the reducer `move_card` to run as soon as possible.
     ///
     /// This method returns immediately, and errors only if we are unable to send the request.
     /// The reducer will run asynchronously in the future,
     ///  and this method provides no way to listen for its completion status.
-    /// /// Use [`place_card:place_card_then`] to run a callback after the reducer completes.
-    fn place_card(&self, client_time_ms: u64,
-card_id: u32,
-placement: Placement,
+    /// /// Use [`move_card:move_card_then`] to run a callback after the reducer completes.
+    fn move_card(&self, card_id: u32,
+time_ms: u64,
+surface: u8,
+macro_zone: u64,
+micro_location: u32,
 ) -> __sdk::Result<()> {
-        self.place_card_then(client_time_ms, card_id, placement,  |_, _| {})
+        self.move_card_then(card_id, time_ms, surface, macro_zone, micro_location,  |_, _| {})
     }
 
-    /// Request that the remote module invoke the reducer `place_card` to run as soon as possible,
+    /// Request that the remote module invoke the reducer `move_card` to run as soon as possible,
     /// registering `callback` to run when we are notified that the reducer completed.
     ///
     /// This method returns immediately, and errors only if we are unable to send the request.
     /// The reducer will run asynchronously in the future,
     ///  and its status can be observed with the `callback`.
-    fn place_card_then(
+    fn move_card_then(
         &self,
-        client_time_ms: u64,
-card_id: u32,
-placement: Placement,
+        card_id: u32,
+time_ms: u64,
+surface: u8,
+macro_zone: u64,
+micro_location: u32,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
@@ -69,18 +76,20 @@ placement: Placement,
     ) -> __sdk::Result<()>;
 }
 
-impl place_card for super::RemoteReducers {
-    fn place_card_then(
+impl move_card for super::RemoteReducers {
+    fn move_card_then(
         &self,
-        client_time_ms: u64,
-card_id: u32,
-placement: Placement,
+        card_id: u32,
+time_ms: u64,
+surface: u8,
+macro_zone: u64,
+micro_location: u32,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
             + 'static,
     ) -> __sdk::Result<()> {
-        self.imp.invoke_reducer_with_callback(PlaceCardArgs { client_time_ms, card_id, placement,  }, callback)
+        self.imp.invoke_reducer_with_callback(MoveCardArgs { card_id, time_ms, surface, macro_zone, micro_location,  }, callback)
     }
 }
 

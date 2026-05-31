@@ -11,30 +11,40 @@ use spacetimedb_sdk::__codegen::{
 	__ws,
 };
 
+pub mod card_type;
+pub mod card_id_counter_type;
 pub mod card_shard_type;
 pub mod gc_schedule_type;
 pub mod region_type;
 pub mod sequence_counter_type;
 pub mod zone_type;
 pub mod acquire_card_shard_reducer;
+pub mod ensure_region_reducer;
 pub mod generate_forest_terrain_reducer;
+pub mod modify_tile_stock_reducer;
 pub mod release_card_shard_reducer;
 pub mod request_zone_reducer;
 pub mod set_tile_reducer;
 pub mod card_shards_table;
+pub mod cards_table;
 pub mod regions_table;
 pub mod zones_table;
 
+pub use card_type::Card;
+pub use card_id_counter_type::CardIdCounter;
 pub use card_shard_type::CardShard;
 pub use gc_schedule_type::GcSchedule;
 pub use region_type::Region;
 pub use sequence_counter_type::SequenceCounter;
 pub use zone_type::Zone;
 pub use card_shards_table::*;
+pub use cards_table::*;
 pub use regions_table::*;
 pub use zones_table::*;
 pub use acquire_card_shard_reducer::acquire_card_shard;
+pub use ensure_region_reducer::ensure_region;
 pub use generate_forest_terrain_reducer::generate_forest_terrain;
+pub use modify_tile_stock_reducer::modify_tile_stock;
 pub use release_card_shard_reducer::release_card_shard;
 pub use request_zone_reducer::request_zone;
 pub use set_tile_reducer::set_tile;
@@ -51,9 +61,23 @@ pub enum Reducer {
         time_ms: u64,
         data_shard: u16,
 }    ,
+    EnsureRegion {
+        client_time_ms: u64,
+        macro_zone: u64,
+}    ,
     GenerateForestTerrain {
         seed: u64,
         radius: i16,
+}    ,
+    ModifyTileStock {
+        time_ms: u64,
+        surface: u8,
+        macro_zone: u64,
+        q: u8,
+        r: u8,
+        slot: u8,
+        op: u8,
+        delta: u8,
 }    ,
     ReleaseCardShard {
         time_ms: u64,
@@ -83,7 +107,9 @@ impl __sdk::Reducer for Reducer {
     fn reducer_name(&self) -> &'static str {
         match self {
                         Reducer::AcquireCardShard { .. } => "acquire_card_shard",
+            Reducer::EnsureRegion { .. } => "ensure_region",
             Reducer::GenerateForestTerrain { .. } => "generate_forest_terrain",
+            Reducer::ModifyTileStock { .. } => "modify_tile_stock",
             Reducer::ReleaseCardShard { .. } => "release_card_shard",
             Reducer::RequestZone { .. } => "request_zone",
             Reducer::SetTile { .. } => "set_tile",
@@ -100,12 +126,38 @@ fn args_bsatn(&self) -> Result<Vec<u8>, __sats::bsatn::EncodeError> {
                 time_ms: time_ms.clone(),
                 data_shard: data_shard.clone(),
 }),
+            Reducer::EnsureRegion{
+                client_time_ms,
+                macro_zone,
+}             => __sats::bsatn::to_vec(&ensure_region_reducer::EnsureRegionArgs {
+                client_time_ms: client_time_ms.clone(),
+                macro_zone: macro_zone.clone(),
+}),
             Reducer::GenerateForestTerrain{
                 seed,
                 radius,
 }             => __sats::bsatn::to_vec(&generate_forest_terrain_reducer::GenerateForestTerrainArgs {
                 seed: seed.clone(),
                 radius: radius.clone(),
+}),
+            Reducer::ModifyTileStock{
+                time_ms,
+                surface,
+                macro_zone,
+                q,
+                r,
+                slot,
+                op,
+                delta,
+}             => __sats::bsatn::to_vec(&modify_tile_stock_reducer::ModifyTileStockArgs {
+                time_ms: time_ms.clone(),
+                surface: surface.clone(),
+                macro_zone: macro_zone.clone(),
+                q: q.clone(),
+                r: r.clone(),
+                slot: slot.clone(),
+                op: op.clone(),
+                delta: delta.clone(),
 }),
             Reducer::ReleaseCardShard{
                 time_ms,
@@ -148,6 +200,7 @@ fn args_bsatn(&self) -> Result<Vec<u8>, __sats::bsatn::EncodeError> {
 #[doc(hidden)]
 pub struct DbUpdate {
         card_shards: __sdk::TableUpdate<CardShard>,
+    cards: __sdk::TableUpdate<Card>,
     regions: __sdk::TableUpdate<Region>,
     zones: __sdk::TableUpdate<Zone>,
 }
@@ -161,6 +214,7 @@ impl TryFrom<__ws::v2::TransactionUpdate> for DbUpdate {
             match &table_update.table_name[..] {
 
         "card_shards" => db_update.card_shards.append(card_shards_table::parse_table_update(table_update)?),
+    "cards" => db_update.cards.append(cards_table::parse_table_update(table_update)?),
     "regions" => db_update.regions.append(regions_table::parse_table_update(table_update)?),
     "zones" => db_update.zones.append(zones_table::parse_table_update(table_update)?),
 
@@ -186,6 +240,7 @@ impl __sdk::DbUpdate for DbUpdate {
                     let mut diff = AppliedDiff::default();
                 
                 diff.card_shards = cache.apply_diff_to_table::<CardShard>("card_shards", &self.card_shards).with_updates_by_pk(|row| &row.valid_at);
+        diff.cards = cache.apply_diff_to_table::<Card>("cards", &self.cards).with_updates_by_pk(|row| &row.valid_at);
         diff.regions = cache.apply_diff_to_table::<Region>("regions", &self.regions).with_updates_by_pk(|row| &row.valid_at);
         diff.zones = cache.apply_diff_to_table::<Zone>("zones", &self.zones).with_updates_by_pk(|row| &row.valid_at);
 
@@ -196,6 +251,7 @@ fn parse_initial_rows(raw: __ws::v2::QueryRows) -> __sdk::Result<Self> {
 for table_rows in raw.tables {
             match &table_rows.table[..] {
                                 "card_shards" => db_update.card_shards.append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
+                "cards" => db_update.cards.append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
                 "regions" => db_update.regions.append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
                 "zones" => db_update.zones.append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
                 unknown => { return Err(__sdk::InternalError::unknown_name("table", unknown, "QueryRows").into()); }
@@ -206,6 +262,7 @@ fn parse_unsubscribe_rows(raw: __ws::v2::QueryRows) -> __sdk::Result<Self> {
 for table_rows in raw.tables {
             match &table_rows.table[..] {
                                 "card_shards" => db_update.card_shards.append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
+                "cards" => db_update.cards.append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
                 "regions" => db_update.regions.append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
                 "zones" => db_update.zones.append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
                 unknown => { return Err(__sdk::InternalError::unknown_name("table", unknown, "QueryRows").into()); }
@@ -218,6 +275,7 @@ for table_rows in raw.tables {
 #[doc(hidden)]
 pub struct AppliedDiff<'r> {
         card_shards: __sdk::TableAppliedDiff<'r, CardShard>,
+    cards: __sdk::TableAppliedDiff<'r, Card>,
     regions: __sdk::TableAppliedDiff<'r, Region>,
     zones: __sdk::TableAppliedDiff<'r, Zone>,
     __unused: std::marker::PhantomData<&'r ()>,
@@ -231,6 +289,7 @@ impl __sdk::InModule for AppliedDiff<'_> {
 impl<'r> __sdk::AppliedDiff<'r> for AppliedDiff<'r> {
     fn invoke_row_callbacks(&self, event: &EventContext, callbacks: &mut __sdk::DbCallbacks<RemoteModule>) {
                 callbacks.invoke_table_row_callbacks::<CardShard>("card_shards", &self.card_shards, event);
+        callbacks.invoke_table_row_callbacks::<Card>("cards", &self.cards, event);
         callbacks.invoke_table_row_callbacks::<Region>("regions", &self.regions, event);
         callbacks.invoke_table_row_callbacks::<Zone>("zones", &self.zones, event);
 }
@@ -885,11 +944,13 @@ impl __sdk::SpacetimeModule for RemoteModule {
 
 fn register_tables(client_cache: &mut __sdk::ClientCache<Self>) {
                 card_shards_table::register_table(client_cache);
+        cards_table::register_table(client_cache);
         regions_table::register_table(client_cache);
         zones_table::register_table(client_cache);
 }
 const ALL_TABLE_NAMES: &'static [&'static str] = &[
                 "card_shards",
+        "cards",
         "regions",
         "zones",
 ];

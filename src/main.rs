@@ -4,10 +4,12 @@
 //! routed via `routing` and named via `config`. Recipe gather/validate/apply
 //! land in later workstreams.
 
+mod apply;
 mod bindings;
 mod config;
 mod connections;
 mod gather;
+mod propose;
 mod protocol;
 mod routing;
 mod validation;
@@ -21,7 +23,7 @@ use tokio::signal;
 
 /// Address the gate listens on. `0.0.0.0` so the published container port
 /// reaches it; override with `GATE_LISTEN`.
-const DEFAULT_LISTEN: &str = "0.0.0.0:8080";
+const DEFAULT_LISTEN: &str = "0.0.0.0:8473";
 
 #[tokio::main]
 async fn main() {
@@ -29,13 +31,13 @@ async fn main() {
 
     let listen = std::env::var("GATE_LISTEN").unwrap_or_else(|_| DEFAULT_LISTEN.to_string());
 
-    // Build the upstream pool and warm the shard relay target before serving
-    // clients. The pool retains live connections for the process lifetime; a
-    // failed connect is logged but does not stop the inbound listener.
+    // Build the lazy upstream pool. Connections to the per-module databases
+    // (cards / regions / regionindex) are established on first use, per client
+    // for reads and on demand for gather. Nothing connects to the retired
+    // `shard` monolith anymore.
     let cfg = config::GateConfig::from_env();
     tracing::info!(uri = %cfg.uri, env = %cfg.env, "gate config");
     let pool = Arc::new(connections::Pool::new(cfg));
-    let _ = pool.shard();
 
     let app = Router::new()
         .route("/health", get(health))

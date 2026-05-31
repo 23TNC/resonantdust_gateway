@@ -43,8 +43,11 @@ pub enum GateMsg {
     Row {
         sid: u32,
         table: String,
-        /// `"insert"` or `"delete"` (updates surface as delete+insert).
+        /// `"insert"`, `"update"`, or `"delete"`.
         op: &'static str,
+        /// Present only for `"update"` — the prior row.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        old: Option<serde_json::Value>,
         row: serde_json::Value,
     },
     /// Reducer call `cid` succeeded.

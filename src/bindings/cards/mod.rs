@@ -15,17 +15,26 @@ pub mod card_type;
 pub mod card_id_counter_type;
 pub mod gc_schedule_type;
 pub mod pending_action_type;
+pub mod placement_type;
 pub mod sequence_counter_type;
 pub mod soul_type;
 pub mod soul_private_type;
+pub mod tile_point_type;
 pub mod acquire_hold_reducer;
 pub mod add_card_reducer;
 pub mod claim_pending_reducer;
 pub mod create_card_reducer;
 pub mod destroy_card_reducer;
+pub mod finalize_card_reducer;
+pub mod move_card_reducer;
+pub mod move_soul_reducer;
+pub mod place_card_reducer;
 pub mod release_hold_reducer;
 pub mod release_pending_reducer;
+pub mod request_blueprint_reducer;
 pub mod spawn_soul_reducer;
+pub mod stack_card_reducer;
+pub mod unlock_blueprint_reducer;
 pub mod cards_table;
 pub mod soul_privates_table;
 pub mod souls_table;
@@ -34,9 +43,11 @@ pub use card_type::Card;
 pub use card_id_counter_type::CardIdCounter;
 pub use gc_schedule_type::GcSchedule;
 pub use pending_action_type::PendingAction;
+pub use placement_type::Placement;
 pub use sequence_counter_type::SequenceCounter;
 pub use soul_type::Soul;
 pub use soul_private_type::SoulPrivate;
+pub use tile_point_type::TilePoint;
 pub use cards_table::*;
 pub use soul_privates_table::*;
 pub use souls_table::*;
@@ -45,9 +56,16 @@ pub use add_card_reducer::add_card;
 pub use claim_pending_reducer::claim_pending;
 pub use create_card_reducer::create_card;
 pub use destroy_card_reducer::destroy_card;
+pub use finalize_card_reducer::finalize_card;
+pub use move_card_reducer::move_card;
+pub use move_soul_reducer::move_soul;
+pub use place_card_reducer::place_card;
 pub use release_hold_reducer::release_hold;
 pub use release_pending_reducer::release_pending;
+pub use request_blueprint_reducer::request_blueprint;
 pub use spawn_soul_reducer::spawn_soul;
+pub use stack_card_reducer::stack_card;
+pub use unlock_blueprint_reducer::unlock_blueprint;
 
 #[derive(Clone, PartialEq, Debug)]
 
@@ -84,6 +102,30 @@ pub enum Reducer {
         card_id: u32,
         time_ms: u64,
 }    ,
+    FinalizeCard {
+        card_id: u32,
+        time_ms: u64,
+        progress_style: u8,
+}    ,
+    MoveCard {
+        card_id: u32,
+        time_ms: u64,
+        surface: u8,
+        macro_zone: u64,
+        micro_location: u32,
+}    ,
+    MoveSoul {
+        client_time_ms: u64,
+        caller_player_id: u32,
+        soul_id: u32,
+        path: Vec::<TilePoint>,
+}    ,
+    PlaceCard {
+        client_time_ms: u64,
+        caller_player_id: u32,
+        card_id: u32,
+        placement: Placement,
+}    ,
     ReleaseHold {
         card_id: u32,
         time_ms: u64,
@@ -94,9 +136,32 @@ pub enum Reducer {
         root: u32,
         bindings: Vec::<Vec::<u32>>,
 }    ,
+    RequestBlueprint {
+        client_time_ms: u64,
+        caller_player_id: u32,
+        soul_card_id: u32,
+        blueprint_id: u16,
+        surface: u8,
+        macro_zone: u64,
+        micro_location: u32,
+}    ,
     SpawnSoul {
         client_time_ms: u64,
         player_id: u32,
+        soul_index: u32,
+}    ,
+    StackCard {
+        card_id: u32,
+        time_ms: u64,
+        surface: u8,
+        macro_zone: u64,
+        root: u32,
+        branch: u8,
+        index: u8,
+}    ,
+    UnlockBlueprint {
+        target_card_id: u32,
+        blueprint_key: String,
 }    ,
 }
 
@@ -113,9 +178,16 @@ impl __sdk::Reducer for Reducer {
             Reducer::ClaimPending { .. } => "claim_pending",
             Reducer::CreateCard { .. } => "create_card",
             Reducer::DestroyCard { .. } => "destroy_card",
+            Reducer::FinalizeCard { .. } => "finalize_card",
+            Reducer::MoveCard { .. } => "move_card",
+            Reducer::MoveSoul { .. } => "move_soul",
+            Reducer::PlaceCard { .. } => "place_card",
             Reducer::ReleaseHold { .. } => "release_hold",
             Reducer::ReleasePending { .. } => "release_pending",
+            Reducer::RequestBlueprint { .. } => "request_blueprint",
             Reducer::SpawnSoul { .. } => "spawn_soul",
+            Reducer::StackCard { .. } => "stack_card",
+            Reducer::UnlockBlueprint { .. } => "unlock_blueprint",
             _ => unreachable!(),
 }
 }
@@ -171,6 +243,50 @@ fn args_bsatn(&self) -> Result<Vec<u8>, __sats::bsatn::EncodeError> {
                 card_id: card_id.clone(),
                 time_ms: time_ms.clone(),
 }),
+            Reducer::FinalizeCard{
+                card_id,
+                time_ms,
+                progress_style,
+}             => __sats::bsatn::to_vec(&finalize_card_reducer::FinalizeCardArgs {
+                card_id: card_id.clone(),
+                time_ms: time_ms.clone(),
+                progress_style: progress_style.clone(),
+}),
+            Reducer::MoveCard{
+                card_id,
+                time_ms,
+                surface,
+                macro_zone,
+                micro_location,
+}             => __sats::bsatn::to_vec(&move_card_reducer::MoveCardArgs {
+                card_id: card_id.clone(),
+                time_ms: time_ms.clone(),
+                surface: surface.clone(),
+                macro_zone: macro_zone.clone(),
+                micro_location: micro_location.clone(),
+}),
+            Reducer::MoveSoul{
+                client_time_ms,
+                caller_player_id,
+                soul_id,
+                path,
+}             => __sats::bsatn::to_vec(&move_soul_reducer::MoveSoulArgs {
+                client_time_ms: client_time_ms.clone(),
+                caller_player_id: caller_player_id.clone(),
+                soul_id: soul_id.clone(),
+                path: path.clone(),
+}),
+            Reducer::PlaceCard{
+                client_time_ms,
+                caller_player_id,
+                card_id,
+                placement,
+}             => __sats::bsatn::to_vec(&place_card_reducer::PlaceCardArgs {
+                client_time_ms: client_time_ms.clone(),
+                caller_player_id: caller_player_id.clone(),
+                card_id: card_id.clone(),
+                placement: placement.clone(),
+}),
             Reducer::ReleaseHold{
                 card_id,
                 time_ms,
@@ -189,12 +305,55 @@ fn args_bsatn(&self) -> Result<Vec<u8>, __sats::bsatn::EncodeError> {
                 root: root.clone(),
                 bindings: bindings.clone(),
 }),
+            Reducer::RequestBlueprint{
+                client_time_ms,
+                caller_player_id,
+                soul_card_id,
+                blueprint_id,
+                surface,
+                macro_zone,
+                micro_location,
+}             => __sats::bsatn::to_vec(&request_blueprint_reducer::RequestBlueprintArgs {
+                client_time_ms: client_time_ms.clone(),
+                caller_player_id: caller_player_id.clone(),
+                soul_card_id: soul_card_id.clone(),
+                blueprint_id: blueprint_id.clone(),
+                surface: surface.clone(),
+                macro_zone: macro_zone.clone(),
+                micro_location: micro_location.clone(),
+}),
             Reducer::SpawnSoul{
                 client_time_ms,
                 player_id,
+                soul_index,
 }             => __sats::bsatn::to_vec(&spawn_soul_reducer::SpawnSoulArgs {
                 client_time_ms: client_time_ms.clone(),
                 player_id: player_id.clone(),
+                soul_index: soul_index.clone(),
+}),
+            Reducer::StackCard{
+                card_id,
+                time_ms,
+                surface,
+                macro_zone,
+                root,
+                branch,
+                index,
+}             => __sats::bsatn::to_vec(&stack_card_reducer::StackCardArgs {
+                card_id: card_id.clone(),
+                time_ms: time_ms.clone(),
+                surface: surface.clone(),
+                macro_zone: macro_zone.clone(),
+                root: root.clone(),
+                branch: branch.clone(),
+                index: index.clone(),
+}),
+            Reducer::UnlockBlueprint{
+                target_card_id,
+                blueprint_key,
+}             => __sats::bsatn::to_vec(&unlock_blueprint_reducer::UnlockBlueprintArgs {
+                target_card_id: target_card_id.clone(),
+                blueprint_key: blueprint_key.clone(),
 }),
             _ => unreachable!(),
 }

@@ -9,54 +9,63 @@ use spacetimedb_sdk::__codegen::{
 	__ws,
 };
 
+use super::tile_point_type::TilePoint;
 
 #[derive(__lib::ser::Serialize, __lib::de::Deserialize, Clone, PartialEq, Debug)]
 #[sats(crate = __lib)]
-pub(super) struct ClaimOrLoginArgs {
+pub(super) struct MoveSoulArgs {
     pub client_time_ms: u64,
-    pub name: String,
+    pub caller_player_id: u32,
+    pub soul_id: u32,
+    pub path: Vec::<TilePoint>,
 }
 
-impl From<ClaimOrLoginArgs> for super::Reducer {
-    fn from(args: ClaimOrLoginArgs) -> Self {
-        Self::ClaimOrLogin {
+impl From<MoveSoulArgs> for super::Reducer {
+    fn from(args: MoveSoulArgs) -> Self {
+        Self::MoveSoul {
             client_time_ms: args.client_time_ms,
-            name: args.name,
+            caller_player_id: args.caller_player_id,
+            soul_id: args.soul_id,
+            path: args.path,
 }
 }
 }
 
-impl __sdk::InModule for ClaimOrLoginArgs {
+impl __sdk::InModule for MoveSoulArgs {
     type Module = super::RemoteModule;
 }
 
 #[allow(non_camel_case_types)]
-/// Extension trait for access to the reducer `claim_or_login`.
+/// Extension trait for access to the reducer `move_soul`.
 ///
 /// Implemented for [`super::RemoteReducers`].
-pub trait claim_or_login {
-    /// Request that the remote module invoke the reducer `claim_or_login` to run as soon as possible.
+pub trait move_soul {
+    /// Request that the remote module invoke the reducer `move_soul` to run as soon as possible.
     ///
     /// This method returns immediately, and errors only if we are unable to send the request.
     /// The reducer will run asynchronously in the future,
     ///  and this method provides no way to listen for its completion status.
-    /// /// Use [`claim_or_login:claim_or_login_then`] to run a callback after the reducer completes.
-    fn claim_or_login(&self, client_time_ms: u64,
-name: String,
+    /// /// Use [`move_soul:move_soul_then`] to run a callback after the reducer completes.
+    fn move_soul(&self, client_time_ms: u64,
+caller_player_id: u32,
+soul_id: u32,
+path: Vec::<TilePoint>,
 ) -> __sdk::Result<()> {
-        self.claim_or_login_then(client_time_ms, name,  |_, _| {})
+        self.move_soul_then(client_time_ms, caller_player_id, soul_id, path,  |_, _| {})
     }
 
-    /// Request that the remote module invoke the reducer `claim_or_login` to run as soon as possible,
+    /// Request that the remote module invoke the reducer `move_soul` to run as soon as possible,
     /// registering `callback` to run when we are notified that the reducer completed.
     ///
     /// This method returns immediately, and errors only if we are unable to send the request.
     /// The reducer will run asynchronously in the future,
     ///  and its status can be observed with the `callback`.
-    fn claim_or_login_then(
+    fn move_soul_then(
         &self,
         client_time_ms: u64,
-name: String,
+caller_player_id: u32,
+soul_id: u32,
+path: Vec::<TilePoint>,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
@@ -64,17 +73,19 @@ name: String,
     ) -> __sdk::Result<()>;
 }
 
-impl claim_or_login for super::RemoteReducers {
-    fn claim_or_login_then(
+impl move_soul for super::RemoteReducers {
+    fn move_soul_then(
         &self,
         client_time_ms: u64,
-name: String,
+caller_player_id: u32,
+soul_id: u32,
+path: Vec::<TilePoint>,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
             + 'static,
     ) -> __sdk::Result<()> {
-        self.imp.invoke_reducer_with_callback(ClaimOrLoginArgs { client_time_ms, name,  }, callback)
+        self.imp.invoke_reducer_with_callback(MoveSoulArgs { client_time_ms, caller_player_id, soul_id, path,  }, callback)
     }
 }
 

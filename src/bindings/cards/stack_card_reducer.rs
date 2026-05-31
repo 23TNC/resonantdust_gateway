@@ -12,67 +12,71 @@ use spacetimedb_sdk::__codegen::{
 
 #[derive(__lib::ser::Serialize, __lib::de::Deserialize, Clone, PartialEq, Debug)]
 #[sats(crate = __lib)]
-pub(super) struct RequestBlueprintArgs {
-    pub client_time_ms: u64,
-    pub soul_card_id: u32,
-    pub blueprint_id: u16,
+pub(super) struct StackCardArgs {
+    pub card_id: u32,
+    pub time_ms: u64,
     pub surface: u8,
     pub macro_zone: u64,
-    pub micro_location: u32,
+    pub root: u32,
+    pub branch: u8,
+    pub index: u8,
 }
 
-impl From<RequestBlueprintArgs> for super::Reducer {
-    fn from(args: RequestBlueprintArgs) -> Self {
-        Self::RequestBlueprint {
-            client_time_ms: args.client_time_ms,
-            soul_card_id: args.soul_card_id,
-            blueprint_id: args.blueprint_id,
+impl From<StackCardArgs> for super::Reducer {
+    fn from(args: StackCardArgs) -> Self {
+        Self::StackCard {
+            card_id: args.card_id,
+            time_ms: args.time_ms,
             surface: args.surface,
             macro_zone: args.macro_zone,
-            micro_location: args.micro_location,
+            root: args.root,
+            branch: args.branch,
+            index: args.index,
 }
 }
 }
 
-impl __sdk::InModule for RequestBlueprintArgs {
+impl __sdk::InModule for StackCardArgs {
     type Module = super::RemoteModule;
 }
 
 #[allow(non_camel_case_types)]
-/// Extension trait for access to the reducer `request_blueprint`.
+/// Extension trait for access to the reducer `stack_card`.
 ///
 /// Implemented for [`super::RemoteReducers`].
-pub trait request_blueprint {
-    /// Request that the remote module invoke the reducer `request_blueprint` to run as soon as possible.
+pub trait stack_card {
+    /// Request that the remote module invoke the reducer `stack_card` to run as soon as possible.
     ///
     /// This method returns immediately, and errors only if we are unable to send the request.
     /// The reducer will run asynchronously in the future,
     ///  and this method provides no way to listen for its completion status.
-    /// /// Use [`request_blueprint:request_blueprint_then`] to run a callback after the reducer completes.
-    fn request_blueprint(&self, client_time_ms: u64,
-soul_card_id: u32,
-blueprint_id: u16,
+    /// /// Use [`stack_card:stack_card_then`] to run a callback after the reducer completes.
+    fn stack_card(&self, card_id: u32,
+time_ms: u64,
 surface: u8,
 macro_zone: u64,
-micro_location: u32,
+root: u32,
+branch: u8,
+index: u8,
 ) -> __sdk::Result<()> {
-        self.request_blueprint_then(client_time_ms, soul_card_id, blueprint_id, surface, macro_zone, micro_location,  |_, _| {})
+        self.stack_card_then(card_id, time_ms, surface, macro_zone, root, branch, index,  |_, _| {})
     }
 
-    /// Request that the remote module invoke the reducer `request_blueprint` to run as soon as possible,
+    /// Request that the remote module invoke the reducer `stack_card` to run as soon as possible,
     /// registering `callback` to run when we are notified that the reducer completed.
     ///
     /// This method returns immediately, and errors only if we are unable to send the request.
     /// The reducer will run asynchronously in the future,
     ///  and its status can be observed with the `callback`.
-    fn request_blueprint_then(
+    fn stack_card_then(
         &self,
-        client_time_ms: u64,
-soul_card_id: u32,
-blueprint_id: u16,
+        card_id: u32,
+time_ms: u64,
 surface: u8,
 macro_zone: u64,
-micro_location: u32,
+root: u32,
+branch: u8,
+index: u8,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
@@ -80,21 +84,22 @@ micro_location: u32,
     ) -> __sdk::Result<()>;
 }
 
-impl request_blueprint for super::RemoteReducers {
-    fn request_blueprint_then(
+impl stack_card for super::RemoteReducers {
+    fn stack_card_then(
         &self,
-        client_time_ms: u64,
-soul_card_id: u32,
-blueprint_id: u16,
+        card_id: u32,
+time_ms: u64,
 surface: u8,
 macro_zone: u64,
-micro_location: u32,
+root: u32,
+branch: u8,
+index: u8,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
             + 'static,
     ) -> __sdk::Result<()> {
-        self.imp.invoke_reducer_with_callback(RequestBlueprintArgs { client_time_ms, soul_card_id, blueprint_id, surface, macro_zone, micro_location,  }, callback)
+        self.imp.invoke_reducer_with_callback(StackCardArgs { card_id, time_ms, surface, macro_zone, root, branch, index,  }, callback)
     }
 }
 

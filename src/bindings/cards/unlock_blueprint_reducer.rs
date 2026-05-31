@@ -9,59 +9,54 @@ use spacetimedb_sdk::__codegen::{
 	__ws,
 };
 
-use super::tile_point_type::TilePoint;
 
 #[derive(__lib::ser::Serialize, __lib::de::Deserialize, Clone, PartialEq, Debug)]
 #[sats(crate = __lib)]
-pub(super) struct MoveSoulArgs {
-    pub client_time_ms: u64,
-    pub soul_id: u32,
-    pub path: Vec::<TilePoint>,
+pub(super) struct UnlockBlueprintArgs {
+    pub target_card_id: u32,
+    pub blueprint_key: String,
 }
 
-impl From<MoveSoulArgs> for super::Reducer {
-    fn from(args: MoveSoulArgs) -> Self {
-        Self::MoveSoul {
-            client_time_ms: args.client_time_ms,
-            soul_id: args.soul_id,
-            path: args.path,
+impl From<UnlockBlueprintArgs> for super::Reducer {
+    fn from(args: UnlockBlueprintArgs) -> Self {
+        Self::UnlockBlueprint {
+            target_card_id: args.target_card_id,
+            blueprint_key: args.blueprint_key,
 }
 }
 }
 
-impl __sdk::InModule for MoveSoulArgs {
+impl __sdk::InModule for UnlockBlueprintArgs {
     type Module = super::RemoteModule;
 }
 
 #[allow(non_camel_case_types)]
-/// Extension trait for access to the reducer `move_soul`.
+/// Extension trait for access to the reducer `unlock_blueprint`.
 ///
 /// Implemented for [`super::RemoteReducers`].
-pub trait move_soul {
-    /// Request that the remote module invoke the reducer `move_soul` to run as soon as possible.
+pub trait unlock_blueprint {
+    /// Request that the remote module invoke the reducer `unlock_blueprint` to run as soon as possible.
     ///
     /// This method returns immediately, and errors only if we are unable to send the request.
     /// The reducer will run asynchronously in the future,
     ///  and this method provides no way to listen for its completion status.
-    /// /// Use [`move_soul:move_soul_then`] to run a callback after the reducer completes.
-    fn move_soul(&self, client_time_ms: u64,
-soul_id: u32,
-path: Vec::<TilePoint>,
+    /// /// Use [`unlock_blueprint:unlock_blueprint_then`] to run a callback after the reducer completes.
+    fn unlock_blueprint(&self, target_card_id: u32,
+blueprint_key: String,
 ) -> __sdk::Result<()> {
-        self.move_soul_then(client_time_ms, soul_id, path,  |_, _| {})
+        self.unlock_blueprint_then(target_card_id, blueprint_key,  |_, _| {})
     }
 
-    /// Request that the remote module invoke the reducer `move_soul` to run as soon as possible,
+    /// Request that the remote module invoke the reducer `unlock_blueprint` to run as soon as possible,
     /// registering `callback` to run when we are notified that the reducer completed.
     ///
     /// This method returns immediately, and errors only if we are unable to send the request.
     /// The reducer will run asynchronously in the future,
     ///  and its status can be observed with the `callback`.
-    fn move_soul_then(
+    fn unlock_blueprint_then(
         &self,
-        client_time_ms: u64,
-soul_id: u32,
-path: Vec::<TilePoint>,
+        target_card_id: u32,
+blueprint_key: String,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
@@ -69,18 +64,17 @@ path: Vec::<TilePoint>,
     ) -> __sdk::Result<()>;
 }
 
-impl move_soul for super::RemoteReducers {
-    fn move_soul_then(
+impl unlock_blueprint for super::RemoteReducers {
+    fn unlock_blueprint_then(
         &self,
-        client_time_ms: u64,
-soul_id: u32,
-path: Vec::<TilePoint>,
+        target_card_id: u32,
+blueprint_key: String,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
             + 'static,
     ) -> __sdk::Result<()> {
-        self.imp.invoke_reducer_with_callback(MoveSoulArgs { client_time_ms, soul_id, path,  }, callback)
+        self.imp.invoke_reducer_with_callback(UnlockBlueprintArgs { target_card_id, blueprint_key,  }, callback)
     }
 }
 

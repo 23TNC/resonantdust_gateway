@@ -19,7 +19,10 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use resonantdust_content::packed::valid_at_time;
+use resonantdust_content::packed::{
+    micro_loose_cell, pack_definition, tile_full, unpack_zone_definition, valid_at_time,
+};
+use resonantdust_content::recipe_validate::SyntheticTile;
 use spacetimedb_sdk::{DbContext, Table};
 use tracing::debug;
 
@@ -86,6 +89,17 @@ pub enum GatherError {
     Dropped(String),
     /// The subscription reported an error.
     Subscription(String),
+}
+
+impl std::fmt::Display for GatherError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GatherError::NoConnection(s) => write!(f, "no upstream connection: {s}"),
+            GatherError::Timeout(s) => write!(f, "subscription timed out: {s}"),
+            GatherError::Dropped(s) => write!(f, "subscription channel dropped: {s}"),
+            GatherError::Subscription(s) => write!(f, "subscription error: {s}"),
+        }
+    }
 }
 
 /// Stamp an `async fn $fn(conn, queries) -> Result<(), GatherError>` that
@@ -225,9 +239,10 @@ async fn gather_region(
             .find(|r| r.macro_region == macro_region)
     };
 
-    let Some(region_shard) = snap.region_shard.as_ref().map(|r| r.data_shard) else {
-        return Ok(());
-    };
+    // Single regions shard today: if the index has no entry for this region,
+    // default to shard 0 so world/tile zones are still reachable. (Positional
+    // region sharding will populate `regionindex` and make this a real lookup.)
+    let region_shard = snap.region_shard.as_ref().map(|r| r.data_shard).unwrap_or(0);
 
     let conn = pool
         .regions(region_shard)
@@ -246,6 +261,30 @@ async fn gather_region(
     snap.region = latest_region(&conn, macro_region);
     snap.card_shards = latest_card_shards(&conn);
     Ok(())
+}
+
+/// Derive the synthetic tile for a recipe's branch-0 slot: decode the gathered
+/// zone's tile at the action cell into `(packed_def, (stock0, stock1))`. Returns
+/// `None` if there's no zone, the cell is out of range, or the cell is empty —
+/// recipes that don't reference a tile pass `None` harmlessly. (Card-priority —
+/// a promoted tile-card overriding the zone slot — arrives when tile-cards are
+/// gathered into the snapshot; for now this reads the zone directly.)
+pub fn synthetic_tile(snap: &Snapshot, micro_location: u32) -> Option<SyntheticTile> {
+    let zone = snap.zone.as_ref()?;
+    let (q, r) = micro_loose_cell(micro_location);
+    if q >= 8 || r >= 8 {
+        return None;
+    }
+    let tiles = [
+        zone.t_0, zone.t_1, zone.t_2, zone.t_3, zone.t_4, zone.t_5, zone.t_6, zone.t_7, zone.t_8,
+        zone.t_9, zone.t_10, zone.t_11, zone.t_12, zone.t_13, zone.t_14, zone.t_15,
+    ];
+    let (def_id, stock0, stock1) = tile_full(&tiles, (r as usize) * 8 + q as usize);
+    if def_id == 0 {
+        return None;
+    }
+    let packed_def = pack_definition(unpack_zone_definition(zone.packed_definition), def_id);
+    Some((packed_def, (stock0, stock1)))
 }
 
 // --- latest-version readers (collapse the cache's history to current) ---
