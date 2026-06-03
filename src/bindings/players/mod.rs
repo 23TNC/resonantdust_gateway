@@ -15,7 +15,6 @@ pub mod gc_schedule_type;
 pub mod player_type;
 pub mod player_id_counter_type;
 pub mod player_profile_type;
-pub mod player_session_type;
 pub mod sequence_counter_type;
 pub mod claim_or_login_reducer;
 pub mod set_last_login_reducer;
@@ -27,7 +26,6 @@ pub use gc_schedule_type::GcSchedule;
 pub use player_type::Player;
 pub use player_id_counter_type::PlayerIdCounter;
 pub use player_profile_type::PlayerProfile;
-pub use player_session_type::PlayerSession;
 pub use sequence_counter_type::SequenceCounter;
 pub use player_profiles_table::*;
 pub use players_table::*;
@@ -49,6 +47,7 @@ pub enum Reducer {
 }    ,
     SetLastLogin {
         client_time_ms: u64,
+        player_id: u32,
 }    ,
     SetPlayerFaction {
         player_id: u32,
@@ -83,8 +82,10 @@ fn args_bsatn(&self) -> Result<Vec<u8>, __sats::bsatn::EncodeError> {
 }),
             Reducer::SetLastLogin{
                 client_time_ms,
+                player_id,
 }             => __sats::bsatn::to_vec(&set_last_login_reducer::SetLastLoginArgs {
                 client_time_ms: client_time_ms.clone(),
+                player_id: player_id.clone(),
 }),
             Reducer::SetPlayerFaction{
                 player_id,

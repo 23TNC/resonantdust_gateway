@@ -14,12 +14,14 @@ use spacetimedb_sdk::__codegen::{
 #[sats(crate = __lib)]
 pub(super) struct SetLastLoginArgs {
     pub client_time_ms: u64,
+    pub player_id: u32,
 }
 
 impl From<SetLastLoginArgs> for super::Reducer {
     fn from(args: SetLastLoginArgs) -> Self {
         Self::SetLastLogin {
             client_time_ms: args.client_time_ms,
+            player_id: args.player_id,
 }
 }
 }
@@ -40,8 +42,9 @@ pub trait set_last_login {
     ///  and this method provides no way to listen for its completion status.
     /// /// Use [`set_last_login:set_last_login_then`] to run a callback after the reducer completes.
     fn set_last_login(&self, client_time_ms: u64,
+player_id: u32,
 ) -> __sdk::Result<()> {
-        self.set_last_login_then(client_time_ms,  |_, _| {})
+        self.set_last_login_then(client_time_ms, player_id,  |_, _| {})
     }
 
     /// Request that the remote module invoke the reducer `set_last_login` to run as soon as possible,
@@ -53,6 +56,7 @@ pub trait set_last_login {
     fn set_last_login_then(
         &self,
         client_time_ms: u64,
+player_id: u32,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
@@ -64,12 +68,13 @@ impl set_last_login for super::RemoteReducers {
     fn set_last_login_then(
         &self,
         client_time_ms: u64,
+player_id: u32,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
             + 'static,
     ) -> __sdk::Result<()> {
-        self.imp.invoke_reducer_with_callback(SetLastLoginArgs { client_time_ms,  }, callback)
+        self.imp.invoke_reducer_with_callback(SetLastLoginArgs { client_time_ms, player_id,  }, callback)
     }
 }
 

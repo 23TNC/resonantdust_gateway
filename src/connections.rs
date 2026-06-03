@@ -68,15 +68,20 @@ connector!(connect_regionindex, regionindex);
 /// Cheap to share (`Arc<Pool>`); getters connect-on-miss and cache.
 pub struct Pool {
     cfg: GateConfig,
+    /// The DSL content bundle (defs + catalog + VM functions), loaded once at
+    /// startup. The recipe pipeline reads it instead of the compile-time
+    /// `resonantdust-content` registries.
+    content: Arc<resonantdust_data::loader::Bundle>,
     cards: Mutex<HashMap<u16, Arc<bindings::cards::DbConnection>>>,
     regions: Mutex<HashMap<u16, Arc<bindings::regions::DbConnection>>>,
     regions_index: Mutex<Option<Arc<bindings::regionindex::DbConnection>>>,
 }
 
 impl Pool {
-    pub fn new(cfg: GateConfig) -> Self {
+    pub fn new(cfg: GateConfig, content: Arc<resonantdust_data::loader::Bundle>) -> Self {
         Self {
             cfg,
+            content,
             cards: Mutex::new(HashMap::new()),
             regions: Mutex::new(HashMap::new()),
             regions_index: Mutex::new(None),
@@ -85,6 +90,11 @@ impl Pool {
 
     pub fn config(&self) -> &GateConfig {
         &self.cfg
+    }
+
+    /// The loaded content bundle (the VM + defs the recipe pipeline runs).
+    pub fn content(&self) -> &resonantdust_data::loader::Bundle {
+        &self.content
     }
 
     /// Connection to the `cards` shard `shard`, establishing it on first use.
@@ -184,6 +194,108 @@ impl Pool {
     /// `cards` shard database name for reducer-call relays (shard 0 today).
     pub fn cards_db(&self) -> String {
         self.cfg.cards_db(0)
+    }
+
+    /// `chat` database name for reducer-call relays (single global feed).
+    pub fn chat_db(&self) -> String {
+        self.cfg.chat_db()
+    }
+
+    /// `players` auth-DB name for reducer-call relays (single instance today).
+    pub fn players_db(&self) -> String {
+        self.cfg.players_db()
+    }
+
+    /// Per-client upstream to the single `players` auth DB, mirroring
+    /// [`fresh_cards`]. The client's `players` / `player_profiles` reads route
+    /// here; the gate also reads the player row off this upstream after login to
+    /// learn the `player_id` for its session map.
+    pub fn fresh_players(
+        &self,
+    ) -> Option<(
+        Arc<bindings::players::DbConnection>,
+        tokio::sync::oneshot::Receiver<()>,
+    )> {
+        use bindings::players::DbConnection;
+        let db_name = self.cfg.players_db();
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let ready_tx = Arc::new(Mutex::new(Some(ready_tx)));
+
+        let built = DbConnection::builder()
+            .with_uri(self.cfg.uri.as_str())
+            .with_database_name(db_name)
+            .on_connect({
+                let ready_tx = ready_tx.clone();
+                move |_ctx, identity, _token| {
+                    info!(%identity, "client players upstream connected");
+                    if let Some(tx) = ready_tx.lock().unwrap().take() {
+                        let _ = tx.send(());
+                    }
+                }
+            })
+            .on_connect_error(|_ctx, err| error!(%err, "client players upstream connect error"))
+            .on_disconnect(|_ctx, err| match err {
+                Some(err) => warn!(%err, "client players upstream disconnected"),
+                None => info!("client players upstream disconnected"),
+            })
+            .build();
+
+        match built {
+            Ok(conn) => {
+                conn.run_threaded();
+                Some((Arc::new(conn), ready_rx))
+            }
+            Err(err) => {
+                error!(%err, "failed to build client players upstream");
+                None
+            }
+        }
+    }
+
+    /// Per-client upstream to the single `chat` DB, mirroring [`fresh_cards`].
+    /// `chat_messages` reads route here; each client needs its OWN chat upstream
+    /// for the same set-semantics reason (a shared upstream drops the backlog for
+    /// a second subscriber).
+    pub fn fresh_chat(
+        &self,
+    ) -> Option<(
+        Arc<bindings::chat::DbConnection>,
+        tokio::sync::oneshot::Receiver<()>,
+    )> {
+        use bindings::chat::DbConnection;
+        let db_name = self.cfg.chat_db();
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let ready_tx = Arc::new(Mutex::new(Some(ready_tx)));
+
+        let built = DbConnection::builder()
+            .with_uri(self.cfg.uri.as_str())
+            .with_database_name(db_name)
+            .on_connect({
+                let ready_tx = ready_tx.clone();
+                move |_ctx, identity, _token| {
+                    info!(%identity, "client chat upstream connected");
+                    if let Some(tx) = ready_tx.lock().unwrap().take() {
+                        let _ = tx.send(());
+                    }
+                }
+            })
+            .on_connect_error(|_ctx, err| error!(%err, "client chat upstream connect error"))
+            .on_disconnect(|_ctx, err| match err {
+                Some(err) => warn!(%err, "client chat upstream disconnected"),
+                None => info!("client chat upstream disconnected"),
+            })
+            .build();
+
+        match built {
+            Ok(conn) => {
+                conn.run_threaded();
+                Some((Arc::new(conn), ready_rx))
+            }
+            Err(err) => {
+                error!(%err, "failed to build client chat upstream");
+                None
+            }
+        }
     }
 
     /// Per-client upstream to the `cards` shard, mirroring [`fresh_regions`].

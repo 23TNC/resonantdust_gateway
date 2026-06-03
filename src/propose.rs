@@ -27,13 +27,13 @@ use crate::validation::validate;
 /// Handle a `propose_action` call: run the pipeline and reply CallOk/CallErr.
 pub async fn handle(pool: &Arc<Pool>, tx: &UnboundedSender<String>, cid: u32, args: Value) {
     let reply = match propose(pool, args).await {
-        Ok(()) => GateMsg::CallOk { cid },
+        Ok(()) => GateMsg::call_ok(cid),
         Err(error) => {
             warn!(cid, %error, "propose_action rejected");
-            GateMsg::CallErr { cid, error }
+            GateMsg::call_err(cid, error)
         }
     };
-    let _ = tx.send(reply.to_json());
+    let _ = tx.send(reply);
 }
 
 async fn propose(pool: &Pool, args: Value) -> Result<(), String> {

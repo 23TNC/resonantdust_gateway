@@ -19,10 +19,15 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use resonantdust_content::card_model;
 use resonantdust_content::packed::{
-    micro_loose_cell, pack_definition, tile_full, unpack_zone_definition, valid_at_time,
+    micro_loose_cell, pack_definition, tile_full, unpack_definition, unpack_zone_definition,
+    valid_at_time,
 };
 use resonantdust_content::recipe_validate::SyntheticTile;
+
+/// `card_type` of a promoted tile-card. Mirrors `regions::cards::TILE_CARD_TYPE`.
+const TILE_CARD_TYPE: u8 = 7;
 use spacetimedb_sdk::{DbContext, Table};
 use tracing::debug;
 
@@ -71,6 +76,11 @@ pub struct Snapshot {
     pub cards: HashMap<u32, bindings::cards::Card>,
     /// The zone the action lands in, if it exists.
     pub zone: Option<bindings::regions::Zone>,
+    /// A promoted tile-card at the action cell (regions DB), if one exists. Takes
+    /// priority over the zone slot when deriving the synthetic tile, so a
+    /// repeated action reads the live (decremented / held) stock rather than the
+    /// stale zone bytes (the zone only catches up on GC demotion).
+    pub tile_card: Option<bindings::regions::Card>,
     /// The region containing that zone, if it exists.
     pub region: Option<bindings::regions::Region>,
     /// The region's per-`data_shard` card-shard ref counts (latest each).
@@ -252,6 +262,10 @@ async fn gather_region(
         vec![
             format!("SELECT * FROM zones WHERE macro_zone = {}", proposal.macro_zone),
             format!("SELECT * FROM regions WHERE macro_region = {macro_region}"),
+            // Promoted tile-cards on this zone (regions DB's own `cards` table) —
+            // card-priority for the synthetic tile, and visibility of an in-flight
+            // hold to validation.
+            format!("SELECT * FROM cards WHERE macro_zone = {}", proposal.macro_zone),
             "SELECT * FROM card_shards".to_string(),
         ],
     )
@@ -260,16 +274,58 @@ async fn gather_region(
     snap.zone = latest_zone(&conn, proposal.macro_zone);
     snap.region = latest_region(&conn, macro_region);
     snap.card_shards = latest_card_shards(&conn);
+    let (q, r) = micro_loose_cell(proposal.micro_location);
+    snap.tile_card = latest_tile_card_at(&conn, proposal.macro_zone, q, r);
     Ok(())
 }
 
-/// Derive the synthetic tile for a recipe's branch-0 slot: decode the gathered
-/// zone's tile at the action cell into `(packed_def, (stock0, stock1))`. Returns
-/// `None` if there's no zone, the cell is out of range, or the cell is empty —
-/// recipes that don't reference a tile pass `None` harmlessly. (Card-priority —
-/// a promoted tile-card overriding the zone slot — arrives when tile-cards are
-/// gathered into the snapshot; for now this reads the zone directly.)
+/// Find the promoted tile-card at hex `(q, r)` of `macro_zone` (regions DB),
+/// latest version — a `TILE_CARD_TYPE` card placed loose (snapped) at the cell.
+/// `None` if no tile has been promoted there.
+fn latest_tile_card_at(
+    conn: &bindings::regions::DbConnection,
+    macro_zone: u64,
+    q: u8,
+    r: u8,
+) -> Option<bindings::regions::Card> {
+    use bindings::regions::cards_table::CardsTableAccess;
+    let mut latest: HashMap<u32, bindings::regions::Card> = HashMap::new();
+    for c in conn.db().cards().iter() {
+        if c.macro_zone != macro_zone {
+            continue;
+        }
+        let keep = latest
+            .get(&c.card_id)
+            .map_or(true, |p| valid_at_time(c.valid_at) >= valid_at_time(p.valid_at));
+        if keep {
+            latest.insert(c.card_id, c);
+        }
+    }
+    latest.into_values().find(|c| {
+        let (card_type, _) = unpack_definition(c.packed_definition);
+        card_type == TILE_CARD_TYPE
+            && !card_model::micro_is_card(c.flags_bk)
+            && micro_loose_cell(c.micro_location) == (q, r)
+    })
+}
+
+/// Derive the synthetic tile for a recipe's branch-0 slot at the action cell,
+/// `(packed_def, (stock0, stock1))`. **Card-priority**: a promoted tile-card at
+/// the cell ([`Snapshot::tile_card`], gathered at this same cell) wins over the
+/// zone slot, so a repeated action reads the live stock rather than the stale
+/// zone bytes. Falls back to the zone slot. Returns `None` if neither resolves
+/// (no zone / out of range / empty cell) — recipes that don't reference a tile
+/// pass `None` harmlessly.
 pub fn synthetic_tile(snap: &Snapshot, micro_location: u32) -> Option<SyntheticTile> {
+    if let Some(card) = &snap.tile_card {
+        return Some((
+            card.packed_definition,
+            (
+                card_model::tile_stock(card.flags_bk, 0),
+                card_model::tile_stock(card.flags_bk, 1),
+            ),
+        ));
+    }
     let zone = snap.zone.as_ref()?;
     let (q, r) = micro_loose_cell(micro_location);
     if q >= 8 || r >= 8 {

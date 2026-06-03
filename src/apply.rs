@@ -16,7 +16,7 @@ use serde_json::{json, Value};
 use tracing::debug;
 
 use resonantdust_content::packed::micro_loose_cell;
-use resonantdust_content::recipe_plan::{ActionPlan, Effect};
+use resonantdust_content::recipe_plan::{ActionPlan, Effect, HoldKinds};
 
 use crate::connections::Pool;
 use crate::gather::Proposal;
@@ -66,6 +66,16 @@ pub async fn apply(
     //    which is a recipe slot, not a stack position, and would relocate a
     //    player-placed card. Output positioning is a separate concern, handled
     //    by the Create effects.)
+
+    // 2b. Promote + lock the action's tile UP FRONT at now_ms when the recipe
+    //     targets a synthetic tile. `acquire_tile_hold` promotes the tile-card
+    //     idempotently (position-keyed — the gate never needs its id) and locks
+    //     it with the kind the tile slot's verb declares. An exclusive slot_hold
+    //     that's already held → the reducer errors → this apply aborts → the
+    //     client gets `call_err`. That IS the concurrent-action guard.
+    if let Some(kinds) = &plan.tile_holds {
+        tile_holds(&client, pool, proposal, "acquire_tile_hold", kinds, now_ms).await?;
+    }
 
     // 3. Acquire holds at now_ms (touch always; flavors per plan) — the lock
     //    that pins each bound card at its validated position for the action.
@@ -128,16 +138,17 @@ pub async fn apply(
                 );
             }
             Effect::ModifyTileStock { slot, op, delta } => {
-                // Cross-DB: the tile lives in the regions zone. Promote+mutate is
-                // one regions reducer call; surface/macro_zone/cell come from the
-                // proposal (the action's synthetic-tile location).
+                // Cross-DB: the tile lives in the regions zone. It was already
+                // promoted + locked up front (step 2b), so this only mutates its
+                // stock, future-stamped at completion. (set_tile_stock still
+                // find-or-creates defensively.) Cell comes from the proposal.
                 let (q, r) = micro_loose_cell(proposal.micro_location);
                 let regions_db = pool.regions_db();
                 call(
                     &client,
                     pool,
                     &regions_db,
-                    "modify_tile_stock",
+                    "set_tile_stock",
                     json!({
                         "time_ms": completion_ms,
                         "surface": proposal.surface,
@@ -204,6 +215,13 @@ pub async fn apply(
         }
     }
 
+    // 5b. Release the tile's holds at completion_ms (mirror of step 2b). Once the
+    //     tile-card is hold-free and clean, the regions GC sweep demotes it back
+    //     into the zone.
+    if let Some(kinds) = &plan.tile_holds {
+        tile_holds(&client, pool, proposal, "release_tile_hold", kinds, completion_ms).await?;
+    }
+
     // 6. Finalize every bound card at completion_ms: clear pos_need/pos_want and
     //    stamp progress_style (0 = no bar) so the actor's progress bar renders on
     //    its completion row. Root + all bindings, deduped. Composes with the
@@ -254,6 +272,40 @@ async fn acquire_release(
         json!({ "card_id": card_id, "time_ms": time_ms, "kind": kind }),
     )
     .await
+}
+
+/// Acquire or release the action's **synthetic-tile** holds on the regions
+/// tile-card at the proposal's cell — position-keyed, so the gate never needs the
+/// tile-card's (server-allocated) id. `reducer` is `acquire_tile_hold` or
+/// `release_tile_hold`; `kinds` is the tile slot's recipe verb (exactly one of
+/// slot_hold/slot_share, plus optional position_hold). The acquire of an
+/// already-held exclusive slot_hold errors here → the caller's `?` aborts apply.
+async fn tile_holds(
+    client: &reqwest::Client,
+    pool: &Pool,
+    proposal: &Proposal,
+    reducer: &str,
+    kinds: &HoldKinds,
+    time_ms: u64,
+) -> Result<(), String> {
+    let (q, r) = micro_loose_cell(proposal.micro_location);
+    let db = pool.regions_db();
+    let base = |kind: u8| {
+        json!({
+            "time_ms": time_ms,
+            "surface": proposal.surface,
+            "macro_zone": proposal.macro_zone,
+            "q": q,
+            "r": r,
+            "kind": kind,
+        })
+    };
+    let kind = if kinds.slot_hold { K_SLOT_HOLD } else { K_SLOT_SHARE };
+    call(client, pool, &db, reducer, base(kind)).await?;
+    if kinds.position_hold {
+        call(client, pool, &db, reducer, base(K_POSITION_HOLD)).await?;
+    }
+    Ok(())
 }
 
 /// POST one reducer call to `db`'s HTTP `/call`. Anonymous — gate-called

@@ -19,9 +19,16 @@ pub struct GateConfig {
 
 impl GateConfig {
     pub fn from_env() -> Self {
+        // Environment selection unifies on `RD_ENV` (shared with `bin/st`), with
+        // `GATE_ENV` kept as a per-tool override. Precedence: GATE_ENV > RD_ENV >
+        // `dev`. `bin/gate` resolves this and passes `GATE_ENV` explicitly, so
+        // the `RD_ENV` fallback only matters for a direct binary run.
+        let env = std::env::var("GATE_ENV")
+            .or_else(|_| std::env::var("RD_ENV"))
+            .unwrap_or_else(|_| DEFAULT_ENV.to_string());
         Self {
             uri: std::env::var("GATE_STDB_URI").unwrap_or_else(|_| DEFAULT_STDB_URI.to_string()),
-            env: std::env::var("GATE_ENV").unwrap_or_else(|_| DEFAULT_ENV.to_string()),
+            env,
         }
     }
 
@@ -41,5 +48,16 @@ impl GateConfig {
     /// Single instance today (shard 0).
     pub fn regions_index_db(&self) -> String {
         format!("resonantdust-{}-regionindex-0", self.env)
+    }
+
+    /// The single `chat` database (world chat is one global feed; no sharding).
+    pub fn chat_db(&self) -> String {
+        format!("resonantdust-{}-chat-0", self.env)
+    }
+
+    /// The single `players` auth DB (player record + profile). One instance
+    /// today; the future per-gate-index lives on a canonical control-plane.
+    pub fn players_db(&self) -> String {
+        format!("resonantdust-{}-players-0", self.env)
     }
 }

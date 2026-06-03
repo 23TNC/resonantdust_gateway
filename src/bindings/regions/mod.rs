@@ -19,12 +19,15 @@ pub mod region_type;
 pub mod sequence_counter_type;
 pub mod zone_type;
 pub mod acquire_card_shard_reducer;
+pub mod acquire_tile_hold_reducer;
 pub mod ensure_region_reducer;
 pub mod generate_forest_terrain_reducer;
-pub mod modify_tile_stock_reducer;
+pub mod promote_tile_reducer;
 pub mod release_card_shard_reducer;
+pub mod release_tile_hold_reducer;
 pub mod request_zone_reducer;
 pub mod set_tile_reducer;
+pub mod set_tile_stock_reducer;
 pub mod card_shards_table;
 pub mod cards_table;
 pub mod regions_table;
@@ -42,12 +45,15 @@ pub use cards_table::*;
 pub use regions_table::*;
 pub use zones_table::*;
 pub use acquire_card_shard_reducer::acquire_card_shard;
+pub use acquire_tile_hold_reducer::acquire_tile_hold;
 pub use ensure_region_reducer::ensure_region;
 pub use generate_forest_terrain_reducer::generate_forest_terrain;
-pub use modify_tile_stock_reducer::modify_tile_stock;
+pub use promote_tile_reducer::promote_tile;
 pub use release_card_shard_reducer::release_card_shard;
+pub use release_tile_hold_reducer::release_tile_hold;
 pub use request_zone_reducer::request_zone;
 pub use set_tile_reducer::set_tile;
+pub use set_tile_stock_reducer::set_tile_stock;
 
 #[derive(Clone, PartialEq, Debug)]
 
@@ -61,6 +67,14 @@ pub enum Reducer {
         time_ms: u64,
         data_shard: u16,
 }    ,
+    AcquireTileHold {
+        time_ms: u64,
+        surface: u8,
+        macro_zone: u64,
+        q: u8,
+        r: u8,
+        kind: u8,
+}    ,
     EnsureRegion {
         client_time_ms: u64,
         macro_zone: u64,
@@ -69,19 +83,24 @@ pub enum Reducer {
         seed: u64,
         radius: i16,
 }    ,
-    ModifyTileStock {
+    PromoteTile {
         time_ms: u64,
         surface: u8,
         macro_zone: u64,
         q: u8,
         r: u8,
-        slot: u8,
-        op: u8,
-        delta: u8,
 }    ,
     ReleaseCardShard {
         time_ms: u64,
         data_shard: u16,
+}    ,
+    ReleaseTileHold {
+        time_ms: u64,
+        surface: u8,
+        macro_zone: u64,
+        q: u8,
+        r: u8,
+        kind: u8,
 }    ,
     RequestZone {
         client_time_ms: u64,
@@ -96,6 +115,16 @@ pub enum Reducer {
         stock_0: u8,
         stock_1: u8,
 }    ,
+    SetTileStock {
+        time_ms: u64,
+        surface: u8,
+        macro_zone: u64,
+        q: u8,
+        r: u8,
+        slot: u8,
+        op: u8,
+        delta: u8,
+}    ,
 }
 
 
@@ -107,12 +136,15 @@ impl __sdk::Reducer for Reducer {
     fn reducer_name(&self) -> &'static str {
         match self {
                         Reducer::AcquireCardShard { .. } => "acquire_card_shard",
+            Reducer::AcquireTileHold { .. } => "acquire_tile_hold",
             Reducer::EnsureRegion { .. } => "ensure_region",
             Reducer::GenerateForestTerrain { .. } => "generate_forest_terrain",
-            Reducer::ModifyTileStock { .. } => "modify_tile_stock",
+            Reducer::PromoteTile { .. } => "promote_tile",
             Reducer::ReleaseCardShard { .. } => "release_card_shard",
+            Reducer::ReleaseTileHold { .. } => "release_tile_hold",
             Reducer::RequestZone { .. } => "request_zone",
             Reducer::SetTile { .. } => "set_tile",
+            Reducer::SetTileStock { .. } => "set_tile_stock",
             _ => unreachable!(),
 }
 }
@@ -125,6 +157,21 @@ fn args_bsatn(&self) -> Result<Vec<u8>, __sats::bsatn::EncodeError> {
 }             => __sats::bsatn::to_vec(&acquire_card_shard_reducer::AcquireCardShardArgs {
                 time_ms: time_ms.clone(),
                 data_shard: data_shard.clone(),
+}),
+            Reducer::AcquireTileHold{
+                time_ms,
+                surface,
+                macro_zone,
+                q,
+                r,
+                kind,
+}             => __sats::bsatn::to_vec(&acquire_tile_hold_reducer::AcquireTileHoldArgs {
+                time_ms: time_ms.clone(),
+                surface: surface.clone(),
+                macro_zone: macro_zone.clone(),
+                q: q.clone(),
+                r: r.clone(),
+                kind: kind.clone(),
 }),
             Reducer::EnsureRegion{
                 client_time_ms,
@@ -140,24 +187,18 @@ fn args_bsatn(&self) -> Result<Vec<u8>, __sats::bsatn::EncodeError> {
                 seed: seed.clone(),
                 radius: radius.clone(),
 }),
-            Reducer::ModifyTileStock{
+            Reducer::PromoteTile{
                 time_ms,
                 surface,
                 macro_zone,
                 q,
                 r,
-                slot,
-                op,
-                delta,
-}             => __sats::bsatn::to_vec(&modify_tile_stock_reducer::ModifyTileStockArgs {
+}             => __sats::bsatn::to_vec(&promote_tile_reducer::PromoteTileArgs {
                 time_ms: time_ms.clone(),
                 surface: surface.clone(),
                 macro_zone: macro_zone.clone(),
                 q: q.clone(),
                 r: r.clone(),
-                slot: slot.clone(),
-                op: op.clone(),
-                delta: delta.clone(),
 }),
             Reducer::ReleaseCardShard{
                 time_ms,
@@ -165,6 +206,21 @@ fn args_bsatn(&self) -> Result<Vec<u8>, __sats::bsatn::EncodeError> {
 }             => __sats::bsatn::to_vec(&release_card_shard_reducer::ReleaseCardShardArgs {
                 time_ms: time_ms.clone(),
                 data_shard: data_shard.clone(),
+}),
+            Reducer::ReleaseTileHold{
+                time_ms,
+                surface,
+                macro_zone,
+                q,
+                r,
+                kind,
+}             => __sats::bsatn::to_vec(&release_tile_hold_reducer::ReleaseTileHoldArgs {
+                time_ms: time_ms.clone(),
+                surface: surface.clone(),
+                macro_zone: macro_zone.clone(),
+                q: q.clone(),
+                r: r.clone(),
+                kind: kind.clone(),
 }),
             Reducer::RequestZone{
                 client_time_ms,
@@ -189,6 +245,25 @@ fn args_bsatn(&self) -> Result<Vec<u8>, __sats::bsatn::EncodeError> {
                 def_id: def_id.clone(),
                 stock_0: stock_0.clone(),
                 stock_1: stock_1.clone(),
+}),
+            Reducer::SetTileStock{
+                time_ms,
+                surface,
+                macro_zone,
+                q,
+                r,
+                slot,
+                op,
+                delta,
+}             => __sats::bsatn::to_vec(&set_tile_stock_reducer::SetTileStockArgs {
+                time_ms: time_ms.clone(),
+                surface: surface.clone(),
+                macro_zone: macro_zone.clone(),
+                q: q.clone(),
+                r: r.clone(),
+                slot: slot.clone(),
+                op: op.clone(),
+                delta: delta.clone(),
 }),
             _ => unreachable!(),
 }

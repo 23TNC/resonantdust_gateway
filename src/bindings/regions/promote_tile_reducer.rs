@@ -12,75 +12,63 @@ use spacetimedb_sdk::__codegen::{
 
 #[derive(__lib::ser::Serialize, __lib::de::Deserialize, Clone, PartialEq, Debug)]
 #[sats(crate = __lib)]
-pub(super) struct ModifyTileStockArgs {
+pub(super) struct PromoteTileArgs {
     pub time_ms: u64,
     pub surface: u8,
     pub macro_zone: u64,
     pub q: u8,
     pub r: u8,
-    pub slot: u8,
-    pub op: u8,
-    pub delta: u8,
 }
 
-impl From<ModifyTileStockArgs> for super::Reducer {
-    fn from(args: ModifyTileStockArgs) -> Self {
-        Self::ModifyTileStock {
+impl From<PromoteTileArgs> for super::Reducer {
+    fn from(args: PromoteTileArgs) -> Self {
+        Self::PromoteTile {
             time_ms: args.time_ms,
             surface: args.surface,
             macro_zone: args.macro_zone,
             q: args.q,
             r: args.r,
-            slot: args.slot,
-            op: args.op,
-            delta: args.delta,
 }
 }
 }
 
-impl __sdk::InModule for ModifyTileStockArgs {
+impl __sdk::InModule for PromoteTileArgs {
     type Module = super::RemoteModule;
 }
 
 #[allow(non_camel_case_types)]
-/// Extension trait for access to the reducer `modify_tile_stock`.
+/// Extension trait for access to the reducer `promote_tile`.
 ///
 /// Implemented for [`super::RemoteReducers`].
-pub trait modify_tile_stock {
-    /// Request that the remote module invoke the reducer `modify_tile_stock` to run as soon as possible.
+pub trait promote_tile {
+    /// Request that the remote module invoke the reducer `promote_tile` to run as soon as possible.
     ///
     /// This method returns immediately, and errors only if we are unable to send the request.
     /// The reducer will run asynchronously in the future,
     ///  and this method provides no way to listen for its completion status.
-    /// /// Use [`modify_tile_stock:modify_tile_stock_then`] to run a callback after the reducer completes.
-    fn modify_tile_stock(&self, time_ms: u64,
+    /// /// Use [`promote_tile:promote_tile_then`] to run a callback after the reducer completes.
+    fn promote_tile(&self, time_ms: u64,
 surface: u8,
 macro_zone: u64,
 q: u8,
 r: u8,
-slot: u8,
-op: u8,
-delta: u8,
 ) -> __sdk::Result<()> {
-        self.modify_tile_stock_then(time_ms, surface, macro_zone, q, r, slot, op, delta,  |_, _| {})
+        self.promote_tile_then(time_ms, surface, macro_zone, q, r,  |_, _| {})
     }
 
-    /// Request that the remote module invoke the reducer `modify_tile_stock` to run as soon as possible,
+    /// Request that the remote module invoke the reducer `promote_tile` to run as soon as possible,
     /// registering `callback` to run when we are notified that the reducer completed.
     ///
     /// This method returns immediately, and errors only if we are unable to send the request.
     /// The reducer will run asynchronously in the future,
     ///  and its status can be observed with the `callback`.
-    fn modify_tile_stock_then(
+    fn promote_tile_then(
         &self,
         time_ms: u64,
 surface: u8,
 macro_zone: u64,
 q: u8,
 r: u8,
-slot: u8,
-op: u8,
-delta: u8,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
@@ -88,23 +76,20 @@ delta: u8,
     ) -> __sdk::Result<()>;
 }
 
-impl modify_tile_stock for super::RemoteReducers {
-    fn modify_tile_stock_then(
+impl promote_tile for super::RemoteReducers {
+    fn promote_tile_then(
         &self,
         time_ms: u64,
 surface: u8,
 macro_zone: u64,
 q: u8,
 r: u8,
-slot: u8,
-op: u8,
-delta: u8,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
             + 'static,
     ) -> __sdk::Result<()> {
-        self.imp.invoke_reducer_with_callback(ModifyTileStockArgs { time_ms, surface, macro_zone, q, r, slot, op, delta,  }, callback)
+        self.imp.invoke_reducer_with_callback(PromoteTileArgs { time_ms, surface, macro_zone, q, r,  }, callback)
     }
 }
 

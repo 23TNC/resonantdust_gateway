@@ -8,6 +8,7 @@ mod apply;
 mod bindings;
 mod config;
 mod connections;
+mod content;
 mod gather;
 mod propose;
 mod protocol;
@@ -37,7 +38,10 @@ async fn main() {
     // `shard` monolith anymore.
     let cfg = config::GateConfig::from_env();
     tracing::info!(uri = %cfg.uri, env = %cfg.env, "gate config");
-    let pool = Arc::new(connections::Pool::new(cfg));
+
+    // Load the DSL content bundle (the runtime recipe engine) before serving.
+    let content = content::load_bundle();
+    let pool = Arc::new(connections::Pool::new(cfg, content));
 
     let app = Router::new()
         .route("/health", get(health))

@@ -17,6 +17,9 @@ services:
       - "8473:8473"
     volumes:
       - .:/workspace
+      # The .rd corpus, read at RUNTIME (loader::load) — the binary compiles in
+      # the VM rlib but reads content from disk, so the running gate needs it too.
+      - ../content:/workspace/content
     working_dir: /workspace
     command: ["sleep", "infinity"]
 
@@ -34,6 +37,7 @@ services:
       - "8474:8474"
     volumes:
       - .:/workspace
+      - ../content:/workspace/content
     working_dir: /workspace
     environment:
       GATE_ENV: "claude"
@@ -54,6 +58,10 @@ services:
       # `path = "content"` dep resolves it (mirrors how the spacetime
       # modules mount ../content into their crate dirs).
       - ../content:/workspace/content
+      # The shared VM rlib (resonantdust-data), mounted where Cargo.toml's
+      # `path = "wasm-data"` dep resolves it. Lives in the main repo at
+      # wasm/data; the gate links it directly (the client gets it as wasm).
+      - ../wasm/data:/workspace/wasm-data
     working_dir: /workspace
     # spacetimedb-lib's build script shells out to `git rev-parse HEAD` to
     # stamp a commit hash, panicking when git is absent (it is, in rust:slim).
