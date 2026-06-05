@@ -12,63 +12,55 @@ use spacetimedb_sdk::__codegen::{
 
 #[derive(__lib::ser::Serialize, __lib::de::Deserialize, Clone, PartialEq, Debug)]
 #[sats(crate = __lib)]
-pub(super) struct CreateCardArgs {
+pub(super) struct SetPlayerPermissionsArgs {
+    pub player_id: u32,
     pub time_ms: u64,
-    pub packed_def: u16,
-    pub surface: u8,
-    pub macro_zone: u64,
-    pub owner_id: u32,
+    pub perms: u8,
 }
 
-impl From<CreateCardArgs> for super::Reducer {
-    fn from(args: CreateCardArgs) -> Self {
-        Self::CreateCard {
+impl From<SetPlayerPermissionsArgs> for super::Reducer {
+    fn from(args: SetPlayerPermissionsArgs) -> Self {
+        Self::SetPlayerPermissions {
+            player_id: args.player_id,
             time_ms: args.time_ms,
-            packed_def: args.packed_def,
-            surface: args.surface,
-            macro_zone: args.macro_zone,
-            owner_id: args.owner_id,
+            perms: args.perms,
 }
 }
 }
 
-impl __sdk::InModule for CreateCardArgs {
+impl __sdk::InModule for SetPlayerPermissionsArgs {
     type Module = super::RemoteModule;
 }
 
 #[allow(non_camel_case_types)]
-/// Extension trait for access to the reducer `create_card`.
+/// Extension trait for access to the reducer `set_player_permissions`.
 ///
 /// Implemented for [`super::RemoteReducers`].
-pub trait create_card {
-    /// Request that the remote module invoke the reducer `create_card` to run as soon as possible.
+pub trait set_player_permissions {
+    /// Request that the remote module invoke the reducer `set_player_permissions` to run as soon as possible.
     ///
     /// This method returns immediately, and errors only if we are unable to send the request.
     /// The reducer will run asynchronously in the future,
     ///  and this method provides no way to listen for its completion status.
-    /// /// Use [`create_card:create_card_then`] to run a callback after the reducer completes.
-    fn create_card(&self, time_ms: u64,
-packed_def: u16,
-surface: u8,
-macro_zone: u64,
-owner_id: u32,
+    /// /// Use [`set_player_permissions:set_player_permissions_then`] to run a callback after the reducer completes.
+    fn set_player_permissions(&self, player_id: u32,
+time_ms: u64,
+perms: u8,
 ) -> __sdk::Result<()> {
-        self.create_card_then(time_ms, packed_def, surface, macro_zone, owner_id,  |_, _| {})
+        self.set_player_permissions_then(player_id, time_ms, perms,  |_, _| {})
     }
 
-    /// Request that the remote module invoke the reducer `create_card` to run as soon as possible,
+    /// Request that the remote module invoke the reducer `set_player_permissions` to run as soon as possible,
     /// registering `callback` to run when we are notified that the reducer completed.
     ///
     /// This method returns immediately, and errors only if we are unable to send the request.
     /// The reducer will run asynchronously in the future,
     ///  and its status can be observed with the `callback`.
-    fn create_card_then(
+    fn set_player_permissions_then(
         &self,
-        time_ms: u64,
-packed_def: u16,
-surface: u8,
-macro_zone: u64,
-owner_id: u32,
+        player_id: u32,
+time_ms: u64,
+perms: u8,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
@@ -76,20 +68,18 @@ owner_id: u32,
     ) -> __sdk::Result<()>;
 }
 
-impl create_card for super::RemoteReducers {
-    fn create_card_then(
+impl set_player_permissions for super::RemoteReducers {
+    fn set_player_permissions_then(
         &self,
-        time_ms: u64,
-packed_def: u16,
-surface: u8,
-macro_zone: u64,
-owner_id: u32,
+        player_id: u32,
+time_ms: u64,
+perms: u8,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
             + 'static,
     ) -> __sdk::Result<()> {
-        self.imp.invoke_reducer_with_callback(CreateCardArgs { time_ms, packed_def, surface, macro_zone, owner_id,  }, callback)
+        self.imp.invoke_reducer_with_callback(SetPlayerPermissionsArgs { player_id, time_ms, perms,  }, callback)
     }
 }
 

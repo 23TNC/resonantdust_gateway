@@ -19,12 +19,11 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use resonantdust_content::card_model;
-use resonantdust_content::packed::{
+use resonantdust_data::card_model;
+use resonantdust_data::packed::{
     micro_loose_cell, pack_definition, tile_full, unpack_definition, unpack_zone_definition,
     valid_at_time,
 };
-use resonantdust_content::recipe_validate::SyntheticTile;
 
 /// `card_type` of a promoted tile-card. Mirrors `regions::cards::TILE_CARD_TYPE`.
 const TILE_CARD_TYPE: u8 = 7;
@@ -316,7 +315,7 @@ fn latest_tile_card_at(
 /// zone bytes. Falls back to the zone slot. Returns `None` if neither resolves
 /// (no zone / out of range / empty cell) — recipes that don't reference a tile
 /// pass `None` harmlessly.
-pub fn synthetic_tile(snap: &Snapshot, micro_location: u32) -> Option<SyntheticTile> {
+pub fn synthetic_tile(snap: &Snapshot, micro_location: u32) -> Option<(u16, (u8, u8))> {
     if let Some(card) = &snap.tile_card {
         return Some((
             card.packed_definition,

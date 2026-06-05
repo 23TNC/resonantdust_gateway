@@ -15,6 +15,7 @@ use spacetimedb_sdk::__codegen::{
 pub(super) struct RequestZoneArgs {
     pub client_time_ms: u64,
     pub macro_zone: u64,
+    pub tiles: Vec::<u64>,
 }
 
 impl From<RequestZoneArgs> for super::Reducer {
@@ -22,6 +23,7 @@ impl From<RequestZoneArgs> for super::Reducer {
         Self::RequestZone {
             client_time_ms: args.client_time_ms,
             macro_zone: args.macro_zone,
+            tiles: args.tiles,
 }
 }
 }
@@ -43,8 +45,9 @@ pub trait request_zone {
     /// /// Use [`request_zone:request_zone_then`] to run a callback after the reducer completes.
     fn request_zone(&self, client_time_ms: u64,
 macro_zone: u64,
+tiles: Vec::<u64>,
 ) -> __sdk::Result<()> {
-        self.request_zone_then(client_time_ms, macro_zone,  |_, _| {})
+        self.request_zone_then(client_time_ms, macro_zone, tiles,  |_, _| {})
     }
 
     /// Request that the remote module invoke the reducer `request_zone` to run as soon as possible,
@@ -57,6 +60,7 @@ macro_zone: u64,
         &self,
         client_time_ms: u64,
 macro_zone: u64,
+tiles: Vec::<u64>,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
@@ -69,12 +73,13 @@ impl request_zone for super::RemoteReducers {
         &self,
         client_time_ms: u64,
 macro_zone: u64,
+tiles: Vec::<u64>,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
             + 'static,
     ) -> __sdk::Result<()> {
-        self.imp.invoke_reducer_with_callback(RequestZoneArgs { client_time_ms, macro_zone,  }, callback)
+        self.imp.invoke_reducer_with_callback(RequestZoneArgs { client_time_ms, macro_zone, tiles,  }, callback)
     }
 }
 

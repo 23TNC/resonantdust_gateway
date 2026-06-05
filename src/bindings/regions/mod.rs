@@ -20,8 +20,8 @@ pub mod sequence_counter_type;
 pub mod zone_type;
 pub mod acquire_card_shard_reducer;
 pub mod acquire_tile_hold_reducer;
+pub mod acquire_tile_lease_reducer;
 pub mod ensure_region_reducer;
-pub mod generate_forest_terrain_reducer;
 pub mod promote_tile_reducer;
 pub mod release_card_shard_reducer;
 pub mod release_tile_hold_reducer;
@@ -46,8 +46,8 @@ pub use regions_table::*;
 pub use zones_table::*;
 pub use acquire_card_shard_reducer::acquire_card_shard;
 pub use acquire_tile_hold_reducer::acquire_tile_hold;
+pub use acquire_tile_lease_reducer::acquire_tile_lease;
 pub use ensure_region_reducer::ensure_region;
-pub use generate_forest_terrain_reducer::generate_forest_terrain;
 pub use promote_tile_reducer::promote_tile;
 pub use release_card_shard_reducer::release_card_shard;
 pub use release_tile_hold_reducer::release_tile_hold;
@@ -75,13 +75,18 @@ pub enum Reducer {
         r: u8,
         kind: u8,
 }    ,
+    AcquireTileLease {
+        surface: u8,
+        macro_zone: u64,
+        q: u8,
+        r: u8,
+        kind: u8,
+        acquire_ms: u64,
+        release_ms: u64,
+}    ,
     EnsureRegion {
         client_time_ms: u64,
         macro_zone: u64,
-}    ,
-    GenerateForestTerrain {
-        seed: u64,
-        radius: i16,
 }    ,
     PromoteTile {
         time_ms: u64,
@@ -105,6 +110,7 @@ pub enum Reducer {
     RequestZone {
         client_time_ms: u64,
         macro_zone: u64,
+        tiles: Vec::<u64>,
 }    ,
     SetTile {
         zone_id: u32,
@@ -137,8 +143,8 @@ impl __sdk::Reducer for Reducer {
         match self {
                         Reducer::AcquireCardShard { .. } => "acquire_card_shard",
             Reducer::AcquireTileHold { .. } => "acquire_tile_hold",
+            Reducer::AcquireTileLease { .. } => "acquire_tile_lease",
             Reducer::EnsureRegion { .. } => "ensure_region",
-            Reducer::GenerateForestTerrain { .. } => "generate_forest_terrain",
             Reducer::PromoteTile { .. } => "promote_tile",
             Reducer::ReleaseCardShard { .. } => "release_card_shard",
             Reducer::ReleaseTileHold { .. } => "release_tile_hold",
@@ -173,19 +179,29 @@ fn args_bsatn(&self) -> Result<Vec<u8>, __sats::bsatn::EncodeError> {
                 r: r.clone(),
                 kind: kind.clone(),
 }),
+            Reducer::AcquireTileLease{
+                surface,
+                macro_zone,
+                q,
+                r,
+                kind,
+                acquire_ms,
+                release_ms,
+}             => __sats::bsatn::to_vec(&acquire_tile_lease_reducer::AcquireTileLeaseArgs {
+                surface: surface.clone(),
+                macro_zone: macro_zone.clone(),
+                q: q.clone(),
+                r: r.clone(),
+                kind: kind.clone(),
+                acquire_ms: acquire_ms.clone(),
+                release_ms: release_ms.clone(),
+}),
             Reducer::EnsureRegion{
                 client_time_ms,
                 macro_zone,
 }             => __sats::bsatn::to_vec(&ensure_region_reducer::EnsureRegionArgs {
                 client_time_ms: client_time_ms.clone(),
                 macro_zone: macro_zone.clone(),
-}),
-            Reducer::GenerateForestTerrain{
-                seed,
-                radius,
-}             => __sats::bsatn::to_vec(&generate_forest_terrain_reducer::GenerateForestTerrainArgs {
-                seed: seed.clone(),
-                radius: radius.clone(),
 }),
             Reducer::PromoteTile{
                 time_ms,
@@ -225,9 +241,11 @@ fn args_bsatn(&self) -> Result<Vec<u8>, __sats::bsatn::EncodeError> {
             Reducer::RequestZone{
                 client_time_ms,
                 macro_zone,
+                tiles,
 }             => __sats::bsatn::to_vec(&request_zone_reducer::RequestZoneArgs {
                 client_time_ms: client_time_ms.clone(),
                 macro_zone: macro_zone.clone(),
+                tiles: tiles.clone(),
 }),
             Reducer::SetTile{
                 zone_id,

@@ -12,12 +12,21 @@
 //! subscriptions and reducer calls.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use tracing::{error, info, warn};
 
 use crate::bindings;
 use crate::config::GateConfig;
+
+/// The shared HTTP client for all upstream `/call` + subscribe requests.
+/// `reqwest::Client` owns a connection pool and is internally `Arc`, so one
+/// process-wide instance (cheaply cloned at call sites) reuses connections
+/// instead of building and discarding a pool per request.
+pub fn http_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(reqwest::Client::new)
+}
 
 /// Stamp a `connect_<module>(uri, db_name) -> Option<Arc<DbConnection>>`
 /// using the module's concrete builder + the standard lifecycle logging.
@@ -68,33 +77,116 @@ connector!(connect_regionindex, regionindex);
 /// Cheap to share (`Arc<Pool>`); getters connect-on-miss and cache.
 pub struct Pool {
     cfg: GateConfig,
-    /// The DSL content bundle (defs + catalog + VM functions), loaded once at
-    /// startup. The recipe pipeline reads it instead of the compile-time
-    /// `resonantdust-content` registries.
-    content: Arc<resonantdust_data::loader::Bundle>,
+    /// The DSL content the gate runs + serves: the [`Bundle`] the recipe
+    /// pipeline reads, plus the same corpus pre-serialized for `/content`.
+    ///
+    /// Behind an `RwLock<Arc<…>>` so `add_content` can hot-swap a validated new
+    /// version live. Readers take a cheap `Arc` snapshot ([`Pool::content`]) and
+    /// run a whole action against one consistent version even if a swap races.
+    content: RwLock<Arc<crate::content::LoadedContent>>,
     cards: Mutex<HashMap<u16, Arc<bindings::cards::DbConnection>>>,
     regions: Mutex<HashMap<u16, Arc<bindings::regions::DbConnection>>>,
     regions_index: Mutex<Option<Arc<bindings::regionindex::DbConnection>>>,
+    /// Live client WS senders, for gate-initiated broadcasts (e.g. the
+    /// `content_changed` push after `add_content`). Dead senders are pruned
+    /// lazily on the next broadcast.
+    clients: Mutex<Vec<tokio::sync::mpsc::UnboundedSender<String>>>,
 }
 
 impl Pool {
-    pub fn new(cfg: GateConfig, content: Arc<resonantdust_data::loader::Bundle>) -> Self {
+    pub fn new(cfg: GateConfig, content: crate::content::LoadedContent) -> Self {
         Self {
             cfg,
-            content,
+            content: RwLock::new(Arc::new(content)),
             cards: Mutex::new(HashMap::new()),
             regions: Mutex::new(HashMap::new()),
             regions_index: Mutex::new(None),
+            clients: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Register a client's WS sender for gate-initiated broadcasts. Called once
+    /// per connection; the sender is pruned on the next broadcast after the
+    /// client disconnects (its receiver drops → `send` errors).
+    pub fn register_client(&self, tx: tokio::sync::mpsc::UnboundedSender<String>) {
+        self.clients.lock().unwrap().push(tx);
+    }
+
+    /// Send `msg` to every live client, pruning any whose channel has closed.
+    pub fn broadcast(&self, msg: String) {
+        self.clients.lock().unwrap().retain(|tx| tx.send(msg.clone()).is_ok());
     }
 
     pub fn config(&self) -> &GateConfig {
         &self.cfg
     }
 
-    /// The loaded content bundle (the VM + defs the recipe pipeline runs).
-    pub fn content(&self) -> &resonantdust_data::loader::Bundle {
-        &self.content
+    /// A snapshot of the current content bundle (the VM + defs the recipe
+    /// pipeline runs). Cheap `Arc` clone; hold it for the duration of an action
+    /// so the whole operation sees one consistent content version.
+    pub fn content(&self) -> Arc<resonantdust_data::loader::Bundle> {
+        self.content.read().unwrap().bundle.clone()
+    }
+
+    /// The pre-serialized `GET /content` body (the `.rd` corpus + locales + version
+    /// the client loads). Cheap clone of an `Arc<str>`.
+    pub fn content_json(&self) -> Arc<str> {
+        self.content.read().unwrap().payload_json.clone()
+    }
+
+    /// The corpus version fingerprint as a hex string (for `GET /content-version`).
+    pub fn content_version_hex(&self) -> String {
+        format!("{:016x}", self.content.read().unwrap().version)
+    }
+
+    /// Add a new `.rd` source `(name, text)` to the live content, validating the
+    /// merged corpus and hot-swapping it on success. Returns the new version
+    /// fingerprint (hex). On `Err` the live content is untouched (validation
+    /// runs against a candidate before the swap). `name` must not already be
+    /// present — an in-place change is `modify_content`.
+    pub fn add_content(&self, name: String, text: String) -> Result<String, String> {
+        // Validate against a snapshot WITHOUT holding the write lock (load can be
+        // non-trivial; readers must not block on it).
+        let current = self.content.read().unwrap().clone();
+        let next = current.with_added_source(name, text)?;
+        self.persist_and_swap(next)
+    }
+
+    /// Append a new **version** of an existing card `lineage` (the gate assigns
+    /// the version number), validating + hot-swapping on success. Same lock
+    /// discipline as [`add_content`]. Returns the new version fingerprint (hex).
+    pub fn modify_content(&self, lineage: String, text: String) -> Result<String, String> {
+        let current = self.content.read().unwrap().clone();
+        let next = current.with_modified_source(lineage, text)?;
+        self.persist_and_swap(next)
+    }
+
+    /// Persist the newly-appended runtime source to disk (durable across
+    /// restart), then hot-swap the validated candidate in. Persist BEFORE the
+    /// swap so a write failure leaves live content untouched.
+    fn persist_and_swap(&self, next: crate::content::LoadedContent) -> Result<String, String> {
+        if let Some((name, text)) = next.sources.last() {
+            crate::content::persist_source(name, text)?;
+        }
+        let version_hex = format!("{:016x}", next.version);
+        *self.content.write().unwrap() = Arc::new(next);
+        Ok(version_hex)
+    }
+
+    /// Hot-swap in content fetched from the authority — a **peer** gate's update
+    /// path. Unlike [`add_content`]/[`modify_content`] this does NOT touch disk:
+    /// the peer holds no canonical files, it mirrors the authority's corpus in
+    /// memory. The poll task calls this after a `/content-version` change, then
+    /// broadcasts `content_changed` to its own clients.
+    pub fn swap_content(&self, next: crate::content::LoadedContent) {
+        *self.content.write().unwrap() = Arc::new(next);
+    }
+
+    /// The content-authority URL if this gate is a **peer** (`Some`), or `None`
+    /// if this gate IS the authority. Used to gate authoring (peers reject
+    /// `add`/`modify`) and to drive the poll task.
+    pub fn content_authority(&self) -> Option<&str> {
+        self.cfg.content_authority.as_deref()
     }
 
     /// Connection to the `cards` shard `shard`, establishing it on first use.

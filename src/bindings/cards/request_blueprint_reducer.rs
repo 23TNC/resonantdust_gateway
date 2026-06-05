@@ -20,6 +20,8 @@ pub(super) struct RequestBlueprintArgs {
     pub surface: u8,
     pub macro_zone: u64,
     pub micro_location: u32,
+    pub max_active: i32,
+    pub blueprint_packed_def: u16,
 }
 
 impl From<RequestBlueprintArgs> for super::Reducer {
@@ -32,6 +34,8 @@ impl From<RequestBlueprintArgs> for super::Reducer {
             surface: args.surface,
             macro_zone: args.macro_zone,
             micro_location: args.micro_location,
+            max_active: args.max_active,
+            blueprint_packed_def: args.blueprint_packed_def,
 }
 }
 }
@@ -58,8 +62,10 @@ blueprint_id: u16,
 surface: u8,
 macro_zone: u64,
 micro_location: u32,
+max_active: i32,
+blueprint_packed_def: u16,
 ) -> __sdk::Result<()> {
-        self.request_blueprint_then(client_time_ms, caller_player_id, soul_card_id, blueprint_id, surface, macro_zone, micro_location,  |_, _| {})
+        self.request_blueprint_then(client_time_ms, caller_player_id, soul_card_id, blueprint_id, surface, macro_zone, micro_location, max_active, blueprint_packed_def,  |_, _| {})
     }
 
     /// Request that the remote module invoke the reducer `request_blueprint` to run as soon as possible,
@@ -77,6 +83,8 @@ blueprint_id: u16,
 surface: u8,
 macro_zone: u64,
 micro_location: u32,
+max_active: i32,
+blueprint_packed_def: u16,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
@@ -94,12 +102,14 @@ blueprint_id: u16,
 surface: u8,
 macro_zone: u64,
 micro_location: u32,
+max_active: i32,
+blueprint_packed_def: u16,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
             + 'static,
     ) -> __sdk::Result<()> {
-        self.imp.invoke_reducer_with_callback(RequestBlueprintArgs { client_time_ms, caller_player_id, soul_card_id, blueprint_id, surface, macro_zone, micro_location,  }, callback)
+        self.imp.invoke_reducer_with_callback(RequestBlueprintArgs { client_time_ms, caller_player_id, soul_card_id, blueprint_id, surface, macro_zone, micro_location, max_active, blueprint_packed_def,  }, callback)
     }
 }
 

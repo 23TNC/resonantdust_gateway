@@ -1,10 +1,11 @@
 //! Client ↔ gate wire protocol (JSON over the WS).
 //!
-//! Relay-first shape while the gate fronts the `shard` monolith: the client
-//! subscribes to tables (the gate fans out live rows) and calls reducers (the
-//! gate relays to shard). Intentionally thin for now; as the gate absorbs
-//! validation + sharding this stays the stable client contract, with table/
-//! reducer names giving way to intent-shaped messages.
+//! The client subscribes to tables (the gate fans out live rows from the shards)
+//! and calls reducers; the gate routes a plain relay to the owning shard, while
+//! `propose_action` / `claim_or_login` are intercepted and handled gate-side
+//! (recipe validation + cross-shard apply, session establishment). A deliberately
+//! thin, stable contract — table/reducer names may later give way to
+//! intent-shaped messages.
 
 use serde::{Deserialize, Serialize};
 
@@ -76,6 +77,11 @@ pub enum GateMsg {
     /// clock; multi-gate, the gate first syncs to a master clock and forwards
     /// that here (this frame is unchanged).
     Time { server_micros: String },
+    /// The served DSL content changed (runtime `add_content` / `modify_content`).
+    /// Carries the new corpus version fingerprint (hex). Broadcast to every
+    /// connected client; each re-fetches `/content` and rebuilds. Replaces
+    /// polling `/content-version`.
+    ContentChanged { version: String },
 }
 
 impl GateMsg {
@@ -105,6 +111,11 @@ impl GateMsg {
             server_micros: now_micros(),
         }
         .to_json()
+    }
+
+    /// Build a `content_changed` broadcast frame, serialized for the sink.
+    pub fn content_changed(version: String) -> String {
+        GateMsg::ContentChanged { version }.to_json()
     }
 }
 

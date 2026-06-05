@@ -76,9 +76,11 @@ struct QueryEntry {
 /// mutated only from the single-threaded message loop.
 #[derive(Default)]
 struct SubRegistry {
-    /// query SQL → its live upstream + the sids sharing it.
+    /// dedup key (`"<table>\u{1f}<query SQL>"`) → its live upstream + sharing
+    /// sids. The table prefix keeps same-SQL/different-DB subs (`cards` vs
+    /// `tile_cards`) on separate upstream handles.
     queries: HashMap<String, QueryEntry>,
-    /// sid → the query it subscribed (reverse lookup for `unsub`).
+    /// sid → the dedup key it subscribed (reverse lookup for `unsub`).
     sid_query: HashMap<u32, String>,
     /// tables whose row callbacks are already wired on this connection.
     wired: HashSet<&'static str>,
@@ -113,6 +115,9 @@ async fn run(socket: WebSocket, pool: Arc<Pool>) {
     info!("client connected");
     let (mut sink, mut stream) = socket.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+    // Register this connection for gate-initiated broadcasts (e.g. the
+    // `content_changed` push after a runtime `add_content`).
+    pool.register_client(tx.clone());
 
     // Sole owner of the sink: drain the channel to the client, and emit the idle
     // clock keepalive. A standalone `time` frame is sent ONLY when the socket has
@@ -298,6 +303,12 @@ async fn handle(
             } else if reducer == "claim_or_login" {
                 // Login establishes the gate-owned session (WS → player_id).
                 login_relay(pool, upstream_players, session, tx, cid, args).await;
+            } else if reducer == "add_content" {
+                // Runtime content authoring: gate-validated + hot-swapped, gated
+                // on the session player's `content-author` capability.
+                add_content(pool, upstream_players, session, tx, cid, args).await;
+            } else if reducer == "modify_content" {
+                modify_content(pool, upstream_players, session, tx, cid, args).await;
             } else {
                 relay_call(pool, session, tx, cid, &reducer, args).await;
             }
@@ -441,13 +452,20 @@ macro_rules! issue_sub {
 /// Emits a client-visible error if the upstream isn't connected.
 macro_rules! route {
     ($reg:expr, $opt:expr, $what:literal, $access:path, $accessor:ident, $name:literal, $tx:expr, $sid:expr, $query:expr, $variant:path) => {{
+        // Dedup key = client-facing table name + the query SQL. The name matters
+        // because the SAME SQL can target different upstream DBs: `cards` (the
+        // cards shard) and `tile_cards` (the regions DB's own `cards` table) both
+        // produce `SELECT * FROM cards WHERE macro_zone = …`. Keying on the SQL
+        // alone collapsed them onto one upstream, so promoted tile-cards never
+        // got subscribed/relayed. The name disambiguates the two.
+        let key = format!("{}\u{1f}{}", $name, $query);
         match $opt {
             Some(conn) => {
-                if let Some(entry) = $reg.queries.get_mut(&$query) {
+                if let Some(entry) = $reg.queries.get_mut(&key) {
                     // Dedup hit: share the live upstream. Ack synthetically since
                     // no new `on_applied` will fire for this sid.
                     entry.sids.insert($sid);
-                    $reg.sid_query.insert($sid, $query);
+                    $reg.sid_query.insert($sid, key);
                     let _ = $tx.send(GateMsg::Applied { sid: $sid }.to_json());
                 } else {
                     // First sharer of this query. Wire the table's callbacks once
@@ -460,13 +478,13 @@ macro_rules! route {
                     let mut sids = HashSet::new();
                     sids.insert($sid);
                     $reg.queries.insert(
-                        $query.clone(),
+                        key.clone(),
                         QueryEntry {
                             handle: $variant(handle),
                             sids,
                         },
                     );
-                    $reg.sid_query.insert($sid, $query);
+                    $reg.sid_query.insert($sid, key);
                 }
             }
             None => {
@@ -556,7 +574,7 @@ async fn login_relay(
         pool.server_uri(),
         pool.players_db()
     );
-    match reqwest::Client::new().post(&url).json(&args).send().await {
+    match crate::connections::http_client().post(&url).json(&args).send().await {
         Ok(resp) if resp.status().is_success() => {}
         Ok(resp) => {
             let code = resp.status();
@@ -597,6 +615,130 @@ async fn read_player_id_by_name(
     None
 }
 
+// ---- runtime content authoring (add_content) -------------------------
+
+/// Permission-bit mirror of the `players` module (`PLAYER_FLAG_PERMS_SHIFT` /
+/// `PERM_CONTENT_AUTHOR`). The capability byte is `Player.flags` bits 8..=15;
+/// bit 0 of it is content-author. Kept as a local copy because the gate doesn't
+/// depend on the `players` module crate — keep the two in sync.
+const PLAYER_PERMS_SHIFT: u32 = 8;
+const PERM_CONTENT_AUTHOR: u8 = 1 << 0;
+
+/// Latest-version `flags` for `player_id` off the players upstream cache, or
+/// `None` if no row is visible yet. Rows are valid-time versioned; within one
+/// `player_id` the raw `valid_at` orders by time, so the max is the live row.
+fn player_flags(
+    upstream_players: Option<&Arc<bindings::players::DbConnection>>,
+    player_id: u32,
+) -> Option<u32> {
+    use bindings::players::players_table::PlayersTableAccess;
+    let conn = upstream_players?;
+    conn.db()
+        .players()
+        .iter()
+        .filter(|p| p.player_id == player_id)
+        .max_by_key(|p| p.valid_at)
+        .map(|p| p.flags)
+}
+
+/// Handle `add_content`: authorize, then validate + hot-swap a NEW `.rd` source.
+async fn add_content(
+    pool: &Arc<Pool>,
+    upstream_players: Option<&Arc<bindings::players::DbConnection>>,
+    session: &tokio::sync::Mutex<Option<u32>>,
+    tx: &UnboundedSender<String>,
+    cid: u32,
+    args: serde_json::Value,
+) {
+    let result = async {
+        reject_if_peer(pool)?;
+        require_content_author(upstream_players, session).await?;
+        let name = arg_str(&args, "name")?;
+        let text = arg_str(&args, "text")?;
+        pool.add_content(name, text)
+    }
+    .await;
+    reply_content(pool, tx, cid, "add_content", result);
+}
+
+/// Handle `modify_content`: authorize, then append a new version of an existing
+/// card `lineage` (the gate assigns the version) + hot-swap.
+async fn modify_content(
+    pool: &Arc<Pool>,
+    upstream_players: Option<&Arc<bindings::players::DbConnection>>,
+    session: &tokio::sync::Mutex<Option<u32>>,
+    tx: &UnboundedSender<String>,
+    cid: u32,
+    args: serde_json::Value,
+) {
+    let result = async {
+        reject_if_peer(pool)?;
+        require_content_author(upstream_players, session).await?;
+        let lineage = arg_str(&args, "lineage")?;
+        let text = arg_str(&args, "text")?;
+        pool.modify_content(lineage, text)
+    }
+    .await;
+    reply_content(pool, tx, cid, "modify_content", result);
+}
+
+/// Reject authoring on a **peer** gate. Only the content authority owns the
+/// canonical `.rd` files; peers mirror it in memory and would have nowhere to
+/// persist (and would be overwritten on the next poll). Clients author against
+/// the authority; peers receive the change via the poll → `content_changed` push.
+fn reject_if_peer(pool: &Arc<Pool>) -> Result<(), String> {
+    match pool.content_authority() {
+        Some(url) => Err(format!(
+            "this gate is a content peer; author against the authority ({url})"
+        )),
+        None => Ok(()),
+    }
+}
+
+/// Authorize the session player against the `content-author` capability.
+async fn require_content_author(
+    upstream_players: Option<&Arc<bindings::players::DbConnection>>,
+    session: &tokio::sync::Mutex<Option<u32>>,
+) -> Result<(), String> {
+    let player_id = (*session.lock().await).ok_or_else(|| "not logged in".to_string())?;
+    let flags = player_flags(upstream_players, player_id)
+        .ok_or_else(|| format!("no player row for {player_id}"))?;
+    if ((flags >> PLAYER_PERMS_SHIFT) & 0xFF) as u8 & PERM_CONTENT_AUTHOR == 0 {
+        return Err("not authorized (requires content-author)".to_string());
+    }
+    Ok(())
+}
+
+/// Required string arg `key` from a call's `args`.
+fn arg_str(args: &serde_json::Value, key: &str) -> Result<String, String> {
+    args.get(key)
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| format!("missing or non-string `{key}`"))
+}
+
+/// Reply CallOk + broadcast `content_changed` on success; CallErr otherwise.
+fn reply_content(
+    pool: &Arc<Pool>,
+    tx: &UnboundedSender<String>,
+    cid: u32,
+    op: &str,
+    result: Result<String, String>,
+) {
+    let reply = match result {
+        Ok(version) => {
+            info!(cid, op, %version, "content op applied");
+            pool.broadcast(GateMsg::content_changed(version));
+            GateMsg::call_ok(cid)
+        }
+        Err(error) => {
+            warn!(cid, op, %error, "content op rejected");
+            GateMsg::call_err(cid, error)
+        }
+    };
+    let _ = tx.send(reply);
+}
+
 // ---- writes: relay a reducer call to its owning database -------------
 
 async fn relay_call(
@@ -611,6 +753,69 @@ async fn relay_call(
     // the session, so the client never supplies it). `set_last_login` requires
     // an active session; reject if not logged in.
     let mut args = args;
+    // request_zone: the gate owns worldgen now — compute the zone's tile bytes
+    // here from the DSL bundle and inject them, so the regions reducer just
+    // stores them (no DSL on the server). Non-world surfaces get an empty Vec,
+    // leaving the reducer's own rect/disk seeding path.
+    if reducer == "request_zone" {
+        if let Some(obj) = args.as_object_mut() {
+            let macro_zone = obj
+                .get("macro_zone")
+                .or_else(|| obj.get("macroZone"))
+                .and_then(serde_json::Value::as_u64);
+            if let Some(mz) = macro_zone {
+                let tiles = crate::worldgen::tiles_for_zone(&pool.content(), mz);
+                obj.insert("tiles".to_string(), serde_json::json!(tiles));
+            }
+        }
+    }
+    // spawn_soul: the gate owns content + the dev-loadout composition. Inject the
+    // packed defs the (now content-agnostic) cards reducer needs.
+    if reducer == "spawn_soul" {
+        if let Some(obj) = args.as_object_mut() {
+            let c = pool.content();
+            let pk = |name: &str| serde_json::json!(c.packed_def(name).unwrap_or(0));
+            // dev loadout, in spawn order — the list lives here (single source).
+            let loadout: Vec<u16> = ["dust", "corpus", "corpus", "corpus", "axe"]
+                .iter()
+                .map(|k| c.packed_def(k).unwrap_or(0))
+                .collect();
+            obj.insert("soul_packed".to_string(), pk("player_soul"));
+            obj.insert("human_packed".to_string(), pk("human"));
+            obj.insert("loadout_packed".to_string(), serde_json::json!(loadout));
+        }
+    }
+    // request_blueprint: the gate computes the builder cap (the soul def's folded
+    // `builder` aspect) and injects it; the reducer compares it to the soul's
+    // live `active_blueprints`. Cap is the player_soul's builder aspect — blueprint
+    // requests are for the player's soul (the only blueprint-requesting soul def).
+    if reducer == "request_blueprint" {
+        if let Some(obj) = args.as_object_mut() {
+            let bundle = pool.content();
+            let cap = crate::content::def_aspect_total(&bundle, "player_soul", "builder");
+            obj.insert("max_active".to_string(), serde_json::json!(cap.max(0) as i32));
+            // Resolve the blueprint id → its `<blueprint>.card` ref → packed def,
+            // so the module spawns the right card without a blueprint registry.
+            let packed = obj
+                .get("blueprint_id")
+                .and_then(|v| v.as_u64())
+                .and_then(|id| bundle.blueprint_name(id as u16))
+                .and_then(|name| bundle.blueprint_card(name))
+                .and_then(|card| bundle.packed_def(&card))
+                .unwrap_or(0);
+            obj.insert("blueprint_packed_def".to_string(), serde_json::json!(packed));
+        }
+    }
+    // add_card: resolve the card name → packed def gate-side.
+    if reducer == "add_card" {
+        if let Some(obj) = args.as_object_mut() {
+            if let Some(key) = obj.get("card_key").and_then(|v| v.as_str()).map(String::from) {
+                let packed = pool.content().packed_def(&key).unwrap_or(0);
+                obj.remove("card_key");
+                obj.insert("packed_definition".to_string(), serde_json::json!(packed));
+            }
+        }
+    }
     if reducer == "set_last_login" {
         match *session.lock().await {
             Some(pid) => {
@@ -648,7 +853,7 @@ async fn relay_call(
         }
     };
     let url = format!("{}/v1/database/{}/call/{}", pool.server_uri(), db, reducer);
-    let reply = match reqwest::Client::new().post(&url).json(&args).send().await {
+    let reply = match crate::connections::http_client().post(&url).json(&args).send().await {
         Ok(resp) if resp.status().is_success() => GateMsg::call_ok(cid),
         Ok(resp) => {
             let code = resp.status();

@@ -14,14 +14,14 @@ use spacetimedb_sdk::__codegen::{
 #[sats(crate = __lib)]
 pub(super) struct UnlockBlueprintArgs {
     pub target_card_id: u32,
-    pub blueprint_key: String,
+    pub blueprint_id: u16,
 }
 
 impl From<UnlockBlueprintArgs> for super::Reducer {
     fn from(args: UnlockBlueprintArgs) -> Self {
         Self::UnlockBlueprint {
             target_card_id: args.target_card_id,
-            blueprint_key: args.blueprint_key,
+            blueprint_id: args.blueprint_id,
 }
 }
 }
@@ -42,9 +42,9 @@ pub trait unlock_blueprint {
     ///  and this method provides no way to listen for its completion status.
     /// /// Use [`unlock_blueprint:unlock_blueprint_then`] to run a callback after the reducer completes.
     fn unlock_blueprint(&self, target_card_id: u32,
-blueprint_key: String,
+blueprint_id: u16,
 ) -> __sdk::Result<()> {
-        self.unlock_blueprint_then(target_card_id, blueprint_key,  |_, _| {})
+        self.unlock_blueprint_then(target_card_id, blueprint_id,  |_, _| {})
     }
 
     /// Request that the remote module invoke the reducer `unlock_blueprint` to run as soon as possible,
@@ -56,7 +56,7 @@ blueprint_key: String,
     fn unlock_blueprint_then(
         &self,
         target_card_id: u32,
-blueprint_key: String,
+blueprint_id: u16,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
@@ -68,13 +68,13 @@ impl unlock_blueprint for super::RemoteReducers {
     fn unlock_blueprint_then(
         &self,
         target_card_id: u32,
-blueprint_key: String,
+blueprint_id: u16,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
             + 'static,
     ) -> __sdk::Result<()> {
-        self.imp.invoke_reducer_with_callback(UnlockBlueprintArgs { target_card_id, blueprint_key,  }, callback)
+        self.imp.invoke_reducer_with_callback(UnlockBlueprintArgs { target_card_id, blueprint_id,  }, callback)
     }
 }
 

@@ -14,15 +14,13 @@ use serde_json::Value;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, warn};
 
-use resonantdust_content::recipe_core::recipe;
-use resonantdust_content::recipe_plan::plan_output;
-use resonantdust_content::recipe_validate::validate_bindings;
+use resonantdust_data::recipe_state::validate_bindings;
 
 use crate::apply;
 use crate::connections::Pool;
+use crate::dsl_recipe;
 use crate::gather::{gather, synthetic_tile, Proposal};
 use crate::protocol::GateMsg;
-use crate::validation::validate;
 
 /// Handle a `propose_action` call: run the pipeline and reply CallOk/CallErr.
 pub async fn handle(pool: &Arc<Pool>, tx: &UnboundedSender<String>, cid: u32, args: Value) {
@@ -51,6 +49,7 @@ async fn propose(pool: &Pool, args: Value) -> Result<(), String> {
     debug!(
         recipe_id = proposal.recipe_id,
         root = proposal.root,
+        bindings = ?proposal.bindings,
         caller_player_id,
         now_ms,
         "propose_action"
@@ -61,32 +60,46 @@ async fn propose(pool: &Pool, args: Value) -> Result<(), String> {
         .await
         .map_err(|e| format!("gather: {e}"))?;
 
-    let recipe = recipe(proposal.recipe_id)
-        .map_err(|e| format!("recipe registry: {e}"))?
-        .ok_or_else(|| format!("unknown recipe id {}", proposal.recipe_id))?;
+    let bundle = pool.content();
+
+    // The recipe NAME (Bundle id space) keys the DSL recipe. No legacy registry.
+    let recipe_name = bundle
+        .recipe_name(proposal.recipe_id)
+        .ok_or_else(|| format!("unknown recipe id {}", proposal.recipe_id))?
+        .to_string();
 
     // Derive the synthetic tile (branch-0 slot) from the gathered zone at the
     // action cell — `None` for non-tile recipes (harmless).
     let synthetic = synthetic_tile(&snap, proposal.micro_location);
 
-    // Validate: input predicates (recipe shape) + stack/world binding checks
-    // (existence, not-dead, holds, ownership, magnetic, dup).
-    validate(&snap, &proposal, synthetic, now_ms)?;
+    // Match @input + plan @output on the DSL vm, translated to the ActionPlan
+    // `apply` consumes. The match step replaces the legacy `validate_input`, and
+    // the plan's per-card holds drive the `wants_exclusive` gate below.
+    let plan = dsl_recipe::run(
+        &bundle,
+        &snap,
+        &recipe_name,
+        proposal.root,
+        &proposal.bindings,
+        synthetic,
+    )?;
+
+    // State validation (orthogonal to recipe semantics): existence, not-dead,
+    // holds, ownership, dup, magnetic-lock. `wants_exclusive` comes from the
+    // plan's per-card `slot_hold`; `magnetic_recipe` from the Bundle.
     validate_bindings(
         &snap,
-        recipe,
         proposal.recipe_id,
         proposal.root,
         &proposal.bindings,
         caller_player_id,
         now_ms,
+        |card_id| plan.holds.get(&card_id).is_some_and(|h| h.slot_hold),
+        |packed| bundle.magnetic_recipe_id(packed),
     )?;
 
-    // Plan the output tape into effects + holds + duration.
-    let plan = plan_output(&snap, recipe, &proposal.bindings, proposal.root, synthetic, now_ms)?;
-
     // Apply across the shards (future-stamped at completion).
-    apply::apply(pool, &proposal, &plan, now_ms).await
+    apply::apply(pool, &snap, &proposal, &plan, now_ms).await
 }
 
 /// Resolve the action's `now_ms`: the client's clock, clamped to not exceed the

@@ -21,6 +21,7 @@ pub mod soul_type;
 pub mod soul_private_type;
 pub mod tile_point_type;
 pub mod acquire_hold_reducer;
+pub mod acquire_lease_reducer;
 pub mod add_card_reducer;
 pub mod claim_pending_reducer;
 pub mod create_card_reducer;
@@ -32,6 +33,7 @@ pub mod place_card_reducer;
 pub mod release_hold_reducer;
 pub mod release_pending_reducer;
 pub mod request_blueprint_reducer;
+pub mod set_soul_stat_reducer;
 pub mod spawn_soul_reducer;
 pub mod stack_card_reducer;
 pub mod unlock_blueprint_reducer;
@@ -52,6 +54,7 @@ pub use cards_table::*;
 pub use soul_privates_table::*;
 pub use souls_table::*;
 pub use acquire_hold_reducer::acquire_hold;
+pub use acquire_lease_reducer::acquire_lease;
 pub use add_card_reducer::add_card;
 pub use claim_pending_reducer::claim_pending;
 pub use create_card_reducer::create_card;
@@ -63,6 +66,7 @@ pub use place_card_reducer::place_card;
 pub use release_hold_reducer::release_hold;
 pub use release_pending_reducer::release_pending;
 pub use request_blueprint_reducer::request_blueprint;
+pub use set_soul_stat_reducer::set_soul_stat;
 pub use spawn_soul_reducer::spawn_soul;
 pub use stack_card_reducer::stack_card;
 pub use unlock_blueprint_reducer::unlock_blueprint;
@@ -80,10 +84,16 @@ pub enum Reducer {
         time_ms: u64,
         kind: u8,
 }    ,
+    AcquireLease {
+        card_id: u32,
+        kind: u8,
+        acquire_ms: u64,
+        release_ms: u64,
+}    ,
     AddCard {
         client_time_ms: u64,
         soul_card_id: u32,
-        card_key: String,
+        packed_definition: u16,
 }    ,
     ClaimPending {
         recipe_id: u16,
@@ -93,7 +103,7 @@ pub enum Reducer {
 }    ,
     CreateCard {
         time_ms: u64,
-        def_key: String,
+        packed_def: u16,
         surface: u8,
         macro_zone: u64,
         owner_id: u32,
@@ -144,11 +154,23 @@ pub enum Reducer {
         surface: u8,
         macro_zone: u64,
         micro_location: u32,
+        max_active: i32,
+        blueprint_packed_def: u16,
+}    ,
+    SetSoulStat {
+        soul_card_id: u32,
+        field: u8,
+        byte_index: u8,
+        delta: i8,
+        time_ms: u64,
 }    ,
     SpawnSoul {
         client_time_ms: u64,
         player_id: u32,
         soul_index: u32,
+        soul_packed: u16,
+        human_packed: u16,
+        loadout_packed: Vec::<u16>,
 }    ,
     StackCard {
         card_id: u32,
@@ -161,7 +183,7 @@ pub enum Reducer {
 }    ,
     UnlockBlueprint {
         target_card_id: u32,
-        blueprint_key: String,
+        blueprint_id: u16,
 }    ,
 }
 
@@ -174,6 +196,7 @@ impl __sdk::Reducer for Reducer {
     fn reducer_name(&self) -> &'static str {
         match self {
                         Reducer::AcquireHold { .. } => "acquire_hold",
+            Reducer::AcquireLease { .. } => "acquire_lease",
             Reducer::AddCard { .. } => "add_card",
             Reducer::ClaimPending { .. } => "claim_pending",
             Reducer::CreateCard { .. } => "create_card",
@@ -185,6 +208,7 @@ impl __sdk::Reducer for Reducer {
             Reducer::ReleaseHold { .. } => "release_hold",
             Reducer::ReleasePending { .. } => "release_pending",
             Reducer::RequestBlueprint { .. } => "request_blueprint",
+            Reducer::SetSoulStat { .. } => "set_soul_stat",
             Reducer::SpawnSoul { .. } => "spawn_soul",
             Reducer::StackCard { .. } => "stack_card",
             Reducer::UnlockBlueprint { .. } => "unlock_blueprint",
@@ -203,14 +227,25 @@ fn args_bsatn(&self) -> Result<Vec<u8>, __sats::bsatn::EncodeError> {
                 time_ms: time_ms.clone(),
                 kind: kind.clone(),
 }),
+            Reducer::AcquireLease{
+                card_id,
+                kind,
+                acquire_ms,
+                release_ms,
+}             => __sats::bsatn::to_vec(&acquire_lease_reducer::AcquireLeaseArgs {
+                card_id: card_id.clone(),
+                kind: kind.clone(),
+                acquire_ms: acquire_ms.clone(),
+                release_ms: release_ms.clone(),
+}),
             Reducer::AddCard{
                 client_time_ms,
                 soul_card_id,
-                card_key,
+                packed_definition,
 }             => __sats::bsatn::to_vec(&add_card_reducer::AddCardArgs {
                 client_time_ms: client_time_ms.clone(),
                 soul_card_id: soul_card_id.clone(),
-                card_key: card_key.clone(),
+                packed_definition: packed_definition.clone(),
 }),
             Reducer::ClaimPending{
                 recipe_id,
@@ -225,13 +260,13 @@ fn args_bsatn(&self) -> Result<Vec<u8>, __sats::bsatn::EncodeError> {
 }),
             Reducer::CreateCard{
                 time_ms,
-                def_key,
+                packed_def,
                 surface,
                 macro_zone,
                 owner_id,
 }             => __sats::bsatn::to_vec(&create_card_reducer::CreateCardArgs {
                 time_ms: time_ms.clone(),
-                def_key: def_key.clone(),
+                packed_def: packed_def.clone(),
                 surface: surface.clone(),
                 macro_zone: macro_zone.clone(),
                 owner_id: owner_id.clone(),
@@ -313,6 +348,8 @@ fn args_bsatn(&self) -> Result<Vec<u8>, __sats::bsatn::EncodeError> {
                 surface,
                 macro_zone,
                 micro_location,
+                max_active,
+                blueprint_packed_def,
 }             => __sats::bsatn::to_vec(&request_blueprint_reducer::RequestBlueprintArgs {
                 client_time_ms: client_time_ms.clone(),
                 caller_player_id: caller_player_id.clone(),
@@ -321,15 +358,36 @@ fn args_bsatn(&self) -> Result<Vec<u8>, __sats::bsatn::EncodeError> {
                 surface: surface.clone(),
                 macro_zone: macro_zone.clone(),
                 micro_location: micro_location.clone(),
+                max_active: max_active.clone(),
+                blueprint_packed_def: blueprint_packed_def.clone(),
+}),
+            Reducer::SetSoulStat{
+                soul_card_id,
+                field,
+                byte_index,
+                delta,
+                time_ms,
+}             => __sats::bsatn::to_vec(&set_soul_stat_reducer::SetSoulStatArgs {
+                soul_card_id: soul_card_id.clone(),
+                field: field.clone(),
+                byte_index: byte_index.clone(),
+                delta: delta.clone(),
+                time_ms: time_ms.clone(),
 }),
             Reducer::SpawnSoul{
                 client_time_ms,
                 player_id,
                 soul_index,
+                soul_packed,
+                human_packed,
+                loadout_packed,
 }             => __sats::bsatn::to_vec(&spawn_soul_reducer::SpawnSoulArgs {
                 client_time_ms: client_time_ms.clone(),
                 player_id: player_id.clone(),
                 soul_index: soul_index.clone(),
+                soul_packed: soul_packed.clone(),
+                human_packed: human_packed.clone(),
+                loadout_packed: loadout_packed.clone(),
 }),
             Reducer::StackCard{
                 card_id,
@@ -350,10 +408,10 @@ fn args_bsatn(&self) -> Result<Vec<u8>, __sats::bsatn::EncodeError> {
 }),
             Reducer::UnlockBlueprint{
                 target_card_id,
-                blueprint_key,
+                blueprint_id,
 }             => __sats::bsatn::to_vec(&unlock_blueprint_reducer::UnlockBlueprintArgs {
                 target_card_id: target_card_id.clone(),
-                blueprint_key: blueprint_key.clone(),
+                blueprint_id: blueprint_id.clone(),
 }),
             _ => unreachable!(),
 }

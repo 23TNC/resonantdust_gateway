@@ -12,63 +12,71 @@ use spacetimedb_sdk::__codegen::{
 
 #[derive(__lib::ser::Serialize, __lib::de::Deserialize, Clone, PartialEq, Debug)]
 #[sats(crate = __lib)]
-pub(super) struct CreateCardArgs {
-    pub time_ms: u64,
-    pub packed_def: u16,
+pub(super) struct AcquireTileLeaseArgs {
     pub surface: u8,
     pub macro_zone: u64,
-    pub owner_id: u32,
+    pub q: u8,
+    pub r: u8,
+    pub kind: u8,
+    pub acquire_ms: u64,
+    pub release_ms: u64,
 }
 
-impl From<CreateCardArgs> for super::Reducer {
-    fn from(args: CreateCardArgs) -> Self {
-        Self::CreateCard {
-            time_ms: args.time_ms,
-            packed_def: args.packed_def,
+impl From<AcquireTileLeaseArgs> for super::Reducer {
+    fn from(args: AcquireTileLeaseArgs) -> Self {
+        Self::AcquireTileLease {
             surface: args.surface,
             macro_zone: args.macro_zone,
-            owner_id: args.owner_id,
+            q: args.q,
+            r: args.r,
+            kind: args.kind,
+            acquire_ms: args.acquire_ms,
+            release_ms: args.release_ms,
 }
 }
 }
 
-impl __sdk::InModule for CreateCardArgs {
+impl __sdk::InModule for AcquireTileLeaseArgs {
     type Module = super::RemoteModule;
 }
 
 #[allow(non_camel_case_types)]
-/// Extension trait for access to the reducer `create_card`.
+/// Extension trait for access to the reducer `acquire_tile_lease`.
 ///
 /// Implemented for [`super::RemoteReducers`].
-pub trait create_card {
-    /// Request that the remote module invoke the reducer `create_card` to run as soon as possible.
+pub trait acquire_tile_lease {
+    /// Request that the remote module invoke the reducer `acquire_tile_lease` to run as soon as possible.
     ///
     /// This method returns immediately, and errors only if we are unable to send the request.
     /// The reducer will run asynchronously in the future,
     ///  and this method provides no way to listen for its completion status.
-    /// /// Use [`create_card:create_card_then`] to run a callback after the reducer completes.
-    fn create_card(&self, time_ms: u64,
-packed_def: u16,
-surface: u8,
+    /// /// Use [`acquire_tile_lease:acquire_tile_lease_then`] to run a callback after the reducer completes.
+    fn acquire_tile_lease(&self, surface: u8,
 macro_zone: u64,
-owner_id: u32,
+q: u8,
+r: u8,
+kind: u8,
+acquire_ms: u64,
+release_ms: u64,
 ) -> __sdk::Result<()> {
-        self.create_card_then(time_ms, packed_def, surface, macro_zone, owner_id,  |_, _| {})
+        self.acquire_tile_lease_then(surface, macro_zone, q, r, kind, acquire_ms, release_ms,  |_, _| {})
     }
 
-    /// Request that the remote module invoke the reducer `create_card` to run as soon as possible,
+    /// Request that the remote module invoke the reducer `acquire_tile_lease` to run as soon as possible,
     /// registering `callback` to run when we are notified that the reducer completed.
     ///
     /// This method returns immediately, and errors only if we are unable to send the request.
     /// The reducer will run asynchronously in the future,
     ///  and its status can be observed with the `callback`.
-    fn create_card_then(
+    fn acquire_tile_lease_then(
         &self,
-        time_ms: u64,
-packed_def: u16,
-surface: u8,
+        surface: u8,
 macro_zone: u64,
-owner_id: u32,
+q: u8,
+r: u8,
+kind: u8,
+acquire_ms: u64,
+release_ms: u64,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
@@ -76,20 +84,22 @@ owner_id: u32,
     ) -> __sdk::Result<()>;
 }
 
-impl create_card for super::RemoteReducers {
-    fn create_card_then(
+impl acquire_tile_lease for super::RemoteReducers {
+    fn acquire_tile_lease_then(
         &self,
-        time_ms: u64,
-packed_def: u16,
-surface: u8,
+        surface: u8,
 macro_zone: u64,
-owner_id: u32,
+q: u8,
+r: u8,
+kind: u8,
+acquire_ms: u64,
+release_ms: u64,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
             + 'static,
     ) -> __sdk::Result<()> {
-        self.imp.invoke_reducer_with_callback(CreateCardArgs { time_ms, packed_def, surface, macro_zone, owner_id,  }, callback)
+        self.imp.invoke_reducer_with_callback(AcquireTileLeaseArgs { surface, macro_zone, q, r, kind, acquire_ms, release_ms,  }, callback)
     }
 }
 

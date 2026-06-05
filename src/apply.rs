@@ -15,11 +15,11 @@ use std::collections::BTreeSet;
 use serde_json::{json, Value};
 use tracing::debug;
 
-use resonantdust_content::packed::micro_loose_cell;
-use resonantdust_content::recipe_plan::{ActionPlan, Effect, HoldKinds};
+use resonantdust_data::packed::micro_loose_cell;
+use resonantdust_data::plan::{ActionPlan, Effect, HoldKinds};
 
 use crate::connections::Pool;
-use crate::gather::Proposal;
+use crate::gather::{Proposal, Snapshot};
 
 /// Single `cards` shard today (owner-sharding is future work).
 const CARDS_SHARD: u16 = 0;
@@ -30,19 +30,60 @@ const K_SLOT_HOLD: u8 = 1;
 const K_SLOT_SHARE: u8 = 2;
 const K_POSITION_HOLD: u8 = 3;
 
+/// `soul` card_type nibble (content/cards/types.json). The owning-soul walk
+/// stops at the first owner of this type.
+const SOUL_CARD_TYPE: u8 = 6;
+
+/// Soul-stat slot for a stat-card name → `(field, byte_index)` where field is
+/// the `set_soul_stat` selector (0=stats, 1=fatigued, 2=injured) and byte is
+/// corpus=0/anima=1/sollertia=2/aether=3. The gate owns this mapping now (it was
+/// the cards module's `stat_map`). `None` for non-stat cards.
+fn stat_slot(name: &str) -> Option<(u8, u8)> {
+    let (field, base) = match name.strip_suffix("_dim") {
+        Some(b) => (1u8, b),      // fatigued
+        None => (0u8, name),      // stats
+    };
+    let byte = match base {
+        "corpus" => 0,
+        "anima" => 1,
+        "sollertia" => 2,
+        "aether" => 3,
+        _ => return None,
+    };
+    Some((field, byte))
+}
+
+/// Walk `card_id`'s `owner_id` chain in the snapshot to the owning soul card
+/// (first owner whose packed type nibble is `soul`). `None` if no soul in chain.
+fn owning_soul(snap: &Snapshot, card_id: u32) -> Option<u32> {
+    let mut cur = card_id;
+    for _ in 0..16 {
+        let c = snap.cards.get(&cur)?;
+        if ((c.packed_definition >> 12) & 0xF) as u8 == SOUL_CARD_TYPE {
+            return Some(cur);
+        }
+        if c.owner_id == 0 || c.owner_id == cur {
+            return None;
+        }
+        cur = c.owner_id;
+    }
+    None
+}
+
 /// Materialize `plan` for `proposal` on the cards shard. `now_ms` stamps the
 /// hold acquires (which lock the bound cards in place); completion effects, hold
 /// releases, and the per-card finalize are future-stamped at
 /// `now_ms + plan.duration_ms()`.
 pub async fn apply(
     pool: &Pool,
+    snap: &Snapshot,
     proposal: &Proposal,
     plan: &ActionPlan,
     now_ms: u64,
 ) -> Result<(), String> {
     let completion_ms = now_ms + plan.duration_ms();
     let db = pool.config().cards_db(CARDS_SHARD);
-    let client = reqwest::Client::new();
+    let client = crate::connections::http_client().clone();
 
     // 1. Dedup gate — reject duplicates before any writes land.
     call(
@@ -67,33 +108,35 @@ pub async fn apply(
     //    player-placed card. Output positioning is a separate concern, handled
     //    by the Create effects.)
 
-    // 2b. Promote + lock the action's tile UP FRONT at now_ms when the recipe
-    //     targets a synthetic tile. `acquire_tile_hold` promotes the tile-card
-    //     idempotently (position-keyed — the gate never needs its id) and locks
-    //     it with the kind the tile slot's verb declares. An exclusive slot_hold
-    //     that's already held → the reducer errors → this apply aborts → the
-    //     client gets `call_err`. That IS the concurrent-action guard.
+    // 2b. Promote + LEASE the action's tile when the recipe targets a synthetic
+    //     tile: a single `acquire_tile_lease` takes the hold at now_ms AND writes
+    //     its release at completion_ms atomically. An exclusive slot_hold already
+    //     held → the reducer rejects → this apply aborts → the client gets
+    //     `call_err`. That is the multi-gate concurrent-action guard; the lease
+    //     means any leases already taken self-expire at completion_ms, so no
+    //     rollback is needed on a fail-fast abort.
     if let Some(kinds) = &plan.tile_holds {
-        tile_holds(&client, pool, proposal, "acquire_tile_hold", kinds, now_ms).await?;
+        tile_lease(&client, pool, proposal, kinds, now_ms, completion_ms).await?;
     }
 
-    // 3. Acquire holds at now_ms (touch always; flavors per plan) — the lock
-    //    that pins each bound card at its validated position for the action.
+    // 3. LEASE holds at now_ms→completion_ms (touch always; flavors per plan).
+    //    Each `acquire_lease` is a self-expiring lock: it acquires now and writes
+    //    its own release at completion, atomically, and the exclusive verbs
+    //    check-and-set (reject if already held) — so two gates racing the same
+    //    card resolve to one winner, the loser fail-fast aborts here.
     for (&card_id, kinds) in &plan.holds {
         if card_id == 0 {
             continue;
         }
-        acquire_release(&client, pool, &db, "acquire_hold", card_id, now_ms, K_TOUCH).await?;
+        card_lease(&client, pool, &db, card_id, K_TOUCH, now_ms, completion_ms).await?;
         if kinds.slot_hold {
-            acquire_release(&client, pool, &db, "acquire_hold", card_id, now_ms, K_SLOT_HOLD).await?;
+            card_lease(&client, pool, &db, card_id, K_SLOT_HOLD, now_ms, completion_ms).await?;
         }
         if kinds.slot_share {
-            acquire_release(&client, pool, &db, "acquire_hold", card_id, now_ms, K_SLOT_SHARE)
-                .await?;
+            card_lease(&client, pool, &db, card_id, K_SLOT_SHARE, now_ms, completion_ms).await?;
         }
         if kinds.position_hold {
-            acquire_release(&client, pool, &db, "acquire_hold", card_id, now_ms, K_POSITION_HOLD)
-                .await?;
+            card_lease(&client, pool, &db, card_id, K_POSITION_HOLD, now_ms, completion_ms).await?;
         }
     }
 
@@ -109,6 +152,17 @@ pub async fn apply(
                     json!({ "card_id": card_id, "time_ms": completion_ms }),
                 )
                 .await?;
+                // Soul-stats (gate-owned): a destroyed stat card decrements its
+                // soul's counter. Resolve name → slot → owning soul from the snap.
+                if let Some(card) = snap.cards.get(card_id) {
+                    if let Some((field, byte)) =
+                        pool.content().name_for_packed(card.packed_definition).and_then(stat_slot)
+                    {
+                        if let Some(soul) = owning_soul(snap, card.owner_id) {
+                            soul_stat(&client, pool, &db, soul, field, byte, -1, completion_ms).await?;
+                        }
+                    }
+                }
             }
             Effect::Create {
                 def_key,
@@ -116,6 +170,12 @@ pub async fn apply(
                 macro_zone,
                 owner_id,
             } => {
+                // The gate resolves the def name → packed_def from its Bundle;
+                // the module just stores the opaque id (content-agnostic).
+                let packed_def = pool
+                    .content()
+                    .packed_def(def_key)
+                    .ok_or_else(|| format!("create: def {def_key:?} not in DSL content"))?;
                 call(
                     &client,
                     pool,
@@ -123,13 +183,20 @@ pub async fn apply(
                     "create_card",
                     json!({
                         "time_ms": completion_ms,
-                        "def_key": def_key,
+                        "packed_def": packed_def,
                         "surface": surface,
                         "macro_zone": macro_zone,
                         "owner_id": owner_id,
                     }),
                 )
                 .await?;
+                // Soul-stats (gate-owned): a created stat card increments its
+                // soul's counter.
+                if let Some((field, byte)) = stat_slot(def_key) {
+                    if let Some(soul) = owning_soul(snap, *owner_id) {
+                        soul_stat(&client, pool, &db, soul, field, byte, 1, completion_ms).await?;
+                    }
+                }
             }
             Effect::CreateDeferred { .. } => {
                 return Err(
@@ -163,64 +230,26 @@ pub async fn apply(
                 .await?;
             }
             Effect::UnlockBlueprint {
-                blueprint_key,
+                blueprint_id,
                 target_card_id,
             } => {
                 // Card-side: set the discovery bit on the soul's SoulPrivate.
+                // blueprint_id is the Bundle id (resolved at plan translation).
                 call(
                     &client,
                     pool,
                     &db,
                     "unlock_blueprint",
-                    json!({ "target_card_id": target_card_id, "blueprint_key": blueprint_key }),
+                    json!({ "target_card_id": target_card_id, "blueprint_id": blueprint_id }),
                 )
                 .await?;
             }
         }
     }
 
-    // 5. Release holds at completion_ms (mirror of the acquire pass).
-    for (&card_id, kinds) in &plan.holds {
-        if card_id == 0 {
-            continue;
-        }
-        acquire_release(&client, pool, &db, "release_hold", card_id, completion_ms, K_TOUCH).await?;
-        if kinds.slot_hold {
-            acquire_release(&client, pool, &db, "release_hold", card_id, completion_ms, K_SLOT_HOLD)
-                .await?;
-        }
-        if kinds.slot_share {
-            acquire_release(
-                &client,
-                pool,
-                &db,
-                "release_hold",
-                card_id,
-                completion_ms,
-                K_SLOT_SHARE,
-            )
-            .await?;
-        }
-        if kinds.position_hold {
-            acquire_release(
-                &client,
-                pool,
-                &db,
-                "release_hold",
-                card_id,
-                completion_ms,
-                K_POSITION_HOLD,
-            )
-            .await?;
-        }
-    }
-
-    // 5b. Release the tile's holds at completion_ms (mirror of step 2b). Once the
-    //     tile-card is hold-free and clean, the regions GC sweep demotes it back
-    //     into the zone.
-    if let Some(kinds) = &plan.tile_holds {
-        tile_holds(&client, pool, proposal, "release_tile_hold", kinds, completion_ms).await?;
-    }
+    // 5. Releases are NOT a separate pass — each lease in steps 2b/3 already
+    //    wrote its own release at completion_ms (self-expiring lock). Once a
+    //    tile-card is hold-free and clean, the regions GC sweep demotes it.
 
     // 6. Finalize every bound card at completion_ms: clear pos_need/pos_want and
     //    stamp progress_style (0 = no bar) so the actor's progress bar renders on
@@ -255,55 +284,87 @@ pub async fn apply(
     Ok(())
 }
 
-async fn acquire_release(
+/// Push a soul-stat delta to the cards shard (`set_soul_stat`) — the gate-owned
+/// soul-stats path. `field`: 0=stats, 1=fatigued, 2=injured.
+#[allow(clippy::too_many_arguments)]
+async fn soul_stat(
     client: &reqwest::Client,
     pool: &Pool,
     db: &str,
-    reducer: &str,
-    card_id: u32,
+    soul_card_id: u32,
+    field: u8,
+    byte_index: u8,
+    delta: i8,
     time_ms: u64,
-    kind: u8,
 ) -> Result<(), String> {
     call(
         client,
         pool,
         db,
-        reducer,
-        json!({ "card_id": card_id, "time_ms": time_ms, "kind": kind }),
+        "set_soul_stat",
+        json!({
+            "soul_card_id": soul_card_id,
+            "field": field,
+            "byte_index": byte_index,
+            "delta": delta,
+            "time_ms": time_ms,
+        }),
     )
     .await
 }
 
-/// Acquire or release the action's **synthetic-tile** holds on the regions
-/// tile-card at the proposal's cell — position-keyed, so the gate never needs the
-/// tile-card's (server-allocated) id. `reducer` is `acquire_tile_hold` or
-/// `release_tile_hold`; `kinds` is the tile slot's recipe verb (exactly one of
-/// slot_hold/slot_share, plus optional position_hold). The acquire of an
-/// already-held exclusive slot_hold errors here → the caller's `?` aborts apply.
-async fn tile_holds(
+/// Take a self-expiring lease of hold `kind` on a `cards`-shard card:
+/// `acquire_lease` acquires at `acquire_ms` and writes the release at
+/// `release_ms` in one transaction, rejecting (→ caller's `?` aborts) if an
+/// exclusive kind is already held.
+async fn card_lease(
+    client: &reqwest::Client,
+    pool: &Pool,
+    db: &str,
+    card_id: u32,
+    kind: u8,
+    acquire_ms: u64,
+    release_ms: u64,
+) -> Result<(), String> {
+    call(
+        client,
+        pool,
+        db,
+        "acquire_lease",
+        json!({ "card_id": card_id, "kind": kind, "acquire_ms": acquire_ms, "release_ms": release_ms }),
+    )
+    .await
+}
+
+/// Lease the action's **synthetic-tile** holds on the regions tile-card at the
+/// proposal's cell — position-keyed, so the gate never needs the tile-card's id.
+/// `acquire_tile_lease` promotes + holds at `acquire_ms` and writes the release
+/// at `release_ms`; an exclusive slot_hold already held → reject → caller aborts.
+async fn tile_lease(
     client: &reqwest::Client,
     pool: &Pool,
     proposal: &Proposal,
-    reducer: &str,
     kinds: &HoldKinds,
-    time_ms: u64,
+    acquire_ms: u64,
+    release_ms: u64,
 ) -> Result<(), String> {
     let (q, r) = micro_loose_cell(proposal.micro_location);
     let db = pool.regions_db();
     let base = |kind: u8| {
         json!({
-            "time_ms": time_ms,
             "surface": proposal.surface,
             "macro_zone": proposal.macro_zone,
             "q": q,
             "r": r,
             "kind": kind,
+            "acquire_ms": acquire_ms,
+            "release_ms": release_ms,
         })
     };
     let kind = if kinds.slot_hold { K_SLOT_HOLD } else { K_SLOT_SHARE };
-    call(client, pool, &db, reducer, base(kind)).await?;
+    call(client, pool, &db, "acquire_tile_lease", base(kind)).await?;
     if kinds.position_hold {
-        call(client, pool, &db, reducer, base(K_POSITION_HOLD)).await?;
+        call(client, pool, &db, "acquire_tile_lease", base(K_POSITION_HOLD)).await?;
     }
     Ok(())
 }

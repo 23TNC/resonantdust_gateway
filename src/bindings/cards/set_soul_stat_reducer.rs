@@ -12,51 +12,63 @@ use spacetimedb_sdk::__codegen::{
 
 #[derive(__lib::ser::Serialize, __lib::de::Deserialize, Clone, PartialEq, Debug)]
 #[sats(crate = __lib)]
-pub(super) struct GenerateForestTerrainArgs {
-    pub seed: u64,
-    pub radius: i16,
+pub(super) struct SetSoulStatArgs {
+    pub soul_card_id: u32,
+    pub field: u8,
+    pub byte_index: u8,
+    pub delta: i8,
+    pub time_ms: u64,
 }
 
-impl From<GenerateForestTerrainArgs> for super::Reducer {
-    fn from(args: GenerateForestTerrainArgs) -> Self {
-        Self::GenerateForestTerrain {
-            seed: args.seed,
-            radius: args.radius,
+impl From<SetSoulStatArgs> for super::Reducer {
+    fn from(args: SetSoulStatArgs) -> Self {
+        Self::SetSoulStat {
+            soul_card_id: args.soul_card_id,
+            field: args.field,
+            byte_index: args.byte_index,
+            delta: args.delta,
+            time_ms: args.time_ms,
 }
 }
 }
 
-impl __sdk::InModule for GenerateForestTerrainArgs {
+impl __sdk::InModule for SetSoulStatArgs {
     type Module = super::RemoteModule;
 }
 
 #[allow(non_camel_case_types)]
-/// Extension trait for access to the reducer `generate_forest_terrain`.
+/// Extension trait for access to the reducer `set_soul_stat`.
 ///
 /// Implemented for [`super::RemoteReducers`].
-pub trait generate_forest_terrain {
-    /// Request that the remote module invoke the reducer `generate_forest_terrain` to run as soon as possible.
+pub trait set_soul_stat {
+    /// Request that the remote module invoke the reducer `set_soul_stat` to run as soon as possible.
     ///
     /// This method returns immediately, and errors only if we are unable to send the request.
     /// The reducer will run asynchronously in the future,
     ///  and this method provides no way to listen for its completion status.
-    /// /// Use [`generate_forest_terrain:generate_forest_terrain_then`] to run a callback after the reducer completes.
-    fn generate_forest_terrain(&self, seed: u64,
-radius: i16,
+    /// /// Use [`set_soul_stat:set_soul_stat_then`] to run a callback after the reducer completes.
+    fn set_soul_stat(&self, soul_card_id: u32,
+field: u8,
+byte_index: u8,
+delta: i8,
+time_ms: u64,
 ) -> __sdk::Result<()> {
-        self.generate_forest_terrain_then(seed, radius,  |_, _| {})
+        self.set_soul_stat_then(soul_card_id, field, byte_index, delta, time_ms,  |_, _| {})
     }
 
-    /// Request that the remote module invoke the reducer `generate_forest_terrain` to run as soon as possible,
+    /// Request that the remote module invoke the reducer `set_soul_stat` to run as soon as possible,
     /// registering `callback` to run when we are notified that the reducer completed.
     ///
     /// This method returns immediately, and errors only if we are unable to send the request.
     /// The reducer will run asynchronously in the future,
     ///  and its status can be observed with the `callback`.
-    fn generate_forest_terrain_then(
+    fn set_soul_stat_then(
         &self,
-        seed: u64,
-radius: i16,
+        soul_card_id: u32,
+field: u8,
+byte_index: u8,
+delta: i8,
+time_ms: u64,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
@@ -64,17 +76,20 @@ radius: i16,
     ) -> __sdk::Result<()>;
 }
 
-impl generate_forest_terrain for super::RemoteReducers {
-    fn generate_forest_terrain_then(
+impl set_soul_stat for super::RemoteReducers {
+    fn set_soul_stat_then(
         &self,
-        seed: u64,
-radius: i16,
+        soul_card_id: u32,
+field: u8,
+byte_index: u8,
+delta: i8,
+time_ms: u64,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
             + 'static,
     ) -> __sdk::Result<()> {
-        self.imp.invoke_reducer_with_callback(GenerateForestTerrainArgs { seed, radius,  }, callback)
+        self.imp.invoke_reducer_with_callback(SetSoulStatArgs { soul_card_id, field, byte_index, delta, time_ms,  }, callback)
     }
 }
 

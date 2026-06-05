@@ -16,6 +16,9 @@ pub(super) struct SpawnSoulArgs {
     pub client_time_ms: u64,
     pub player_id: u32,
     pub soul_index: u32,
+    pub soul_packed: u16,
+    pub human_packed: u16,
+    pub loadout_packed: Vec::<u16>,
 }
 
 impl From<SpawnSoulArgs> for super::Reducer {
@@ -24,6 +27,9 @@ impl From<SpawnSoulArgs> for super::Reducer {
             client_time_ms: args.client_time_ms,
             player_id: args.player_id,
             soul_index: args.soul_index,
+            soul_packed: args.soul_packed,
+            human_packed: args.human_packed,
+            loadout_packed: args.loadout_packed,
 }
 }
 }
@@ -46,8 +52,11 @@ pub trait spawn_soul {
     fn spawn_soul(&self, client_time_ms: u64,
 player_id: u32,
 soul_index: u32,
+soul_packed: u16,
+human_packed: u16,
+loadout_packed: Vec::<u16>,
 ) -> __sdk::Result<()> {
-        self.spawn_soul_then(client_time_ms, player_id, soul_index,  |_, _| {})
+        self.spawn_soul_then(client_time_ms, player_id, soul_index, soul_packed, human_packed, loadout_packed,  |_, _| {})
     }
 
     /// Request that the remote module invoke the reducer `spawn_soul` to run as soon as possible,
@@ -61,6 +70,9 @@ soul_index: u32,
         client_time_ms: u64,
 player_id: u32,
 soul_index: u32,
+soul_packed: u16,
+human_packed: u16,
+loadout_packed: Vec::<u16>,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
@@ -74,12 +86,15 @@ impl spawn_soul for super::RemoteReducers {
         client_time_ms: u64,
 player_id: u32,
 soul_index: u32,
+soul_packed: u16,
+human_packed: u16,
+loadout_packed: Vec::<u16>,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
             + 'static,
     ) -> __sdk::Result<()> {
-        self.imp.invoke_reducer_with_callback(SpawnSoulArgs { client_time_ms, player_id, soul_index,  }, callback)
+        self.imp.invoke_reducer_with_callback(SpawnSoulArgs { client_time_ms, player_id, soul_index, soul_packed, human_packed, loadout_packed,  }, callback)
     }
 }
 

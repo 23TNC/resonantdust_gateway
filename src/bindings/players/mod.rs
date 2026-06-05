@@ -19,6 +19,7 @@ pub mod sequence_counter_type;
 pub mod claim_or_login_reducer;
 pub mod set_last_login_reducer;
 pub mod set_player_faction_reducer;
+pub mod set_player_permissions_reducer;
 pub mod player_profiles_table;
 pub mod players_table;
 
@@ -32,6 +33,7 @@ pub use players_table::*;
 pub use claim_or_login_reducer::claim_or_login;
 pub use set_last_login_reducer::set_last_login;
 pub use set_player_faction_reducer::set_player_faction;
+pub use set_player_permissions_reducer::set_player_permissions;
 
 #[derive(Clone, PartialEq, Debug)]
 
@@ -54,6 +56,11 @@ pub enum Reducer {
         time_ms: u64,
         faction: u8,
 }    ,
+    SetPlayerPermissions {
+        player_id: u32,
+        time_ms: u64,
+        perms: u8,
+}    ,
 }
 
 
@@ -67,6 +74,7 @@ impl __sdk::Reducer for Reducer {
                         Reducer::ClaimOrLogin { .. } => "claim_or_login",
             Reducer::SetLastLogin { .. } => "set_last_login",
             Reducer::SetPlayerFaction { .. } => "set_player_faction",
+            Reducer::SetPlayerPermissions { .. } => "set_player_permissions",
             _ => unreachable!(),
 }
 }
@@ -95,6 +103,15 @@ fn args_bsatn(&self) -> Result<Vec<u8>, __sats::bsatn::EncodeError> {
                 player_id: player_id.clone(),
                 time_ms: time_ms.clone(),
                 faction: faction.clone(),
+}),
+            Reducer::SetPlayerPermissions{
+                player_id,
+                time_ms,
+                perms,
+}             => __sats::bsatn::to_vec(&set_player_permissions_reducer::SetPlayerPermissionsArgs {
+                player_id: player_id.clone(),
+                time_ms: time_ms.clone(),
+                perms: perms.clone(),
 }),
             _ => unreachable!(),
 }

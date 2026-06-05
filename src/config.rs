@@ -15,6 +15,13 @@ const DEFAULT_ENV: &str = "dev";
 pub struct GateConfig {
     pub uri: String,
     pub env: String,
+    /// Content-authority URL (`GATE_CONTENT_AUTHORITY`). `None` → this gate IS
+    /// the authority: it reads `.rd` files from disk, serves `/content`, and
+    /// accepts `add`/`modify`. `Some(url)` → this gate is a **peer**: it fetches
+    /// `/content` from `url` at startup, polls `url/content-version`, and rejects
+    /// authoring (clients author against the authority). Content coordination is
+    /// HTTP-to-authority; SpacetimeDB stays game-state-only.
+    pub content_authority: Option<String>,
 }
 
 impl GateConfig {
@@ -26,9 +33,13 @@ impl GateConfig {
         let env = std::env::var("GATE_ENV")
             .or_else(|_| std::env::var("RD_ENV"))
             .unwrap_or_else(|_| DEFAULT_ENV.to_string());
+        let content_authority = std::env::var("GATE_CONTENT_AUTHORITY")
+            .ok()
+            .filter(|s| !s.is_empty());
         Self {
             uri: std::env::var("GATE_STDB_URI").unwrap_or_else(|_| DEFAULT_STDB_URI.to_string()),
             env,
+            content_authority,
         }
     }
 

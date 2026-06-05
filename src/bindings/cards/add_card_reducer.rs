@@ -15,7 +15,7 @@ use spacetimedb_sdk::__codegen::{
 pub(super) struct AddCardArgs {
     pub client_time_ms: u64,
     pub soul_card_id: u32,
-    pub card_key: String,
+    pub packed_definition: u16,
 }
 
 impl From<AddCardArgs> for super::Reducer {
@@ -23,7 +23,7 @@ impl From<AddCardArgs> for super::Reducer {
         Self::AddCard {
             client_time_ms: args.client_time_ms,
             soul_card_id: args.soul_card_id,
-            card_key: args.card_key,
+            packed_definition: args.packed_definition,
 }
 }
 }
@@ -45,9 +45,9 @@ pub trait add_card {
     /// /// Use [`add_card:add_card_then`] to run a callback after the reducer completes.
     fn add_card(&self, client_time_ms: u64,
 soul_card_id: u32,
-card_key: String,
+packed_definition: u16,
 ) -> __sdk::Result<()> {
-        self.add_card_then(client_time_ms, soul_card_id, card_key,  |_, _| {})
+        self.add_card_then(client_time_ms, soul_card_id, packed_definition,  |_, _| {})
     }
 
     /// Request that the remote module invoke the reducer `add_card` to run as soon as possible,
@@ -60,7 +60,7 @@ card_key: String,
         &self,
         client_time_ms: u64,
 soul_card_id: u32,
-card_key: String,
+packed_definition: u16,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
@@ -73,13 +73,13 @@ impl add_card for super::RemoteReducers {
         &self,
         client_time_ms: u64,
 soul_card_id: u32,
-card_key: String,
+packed_definition: u16,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
             + 'static,
     ) -> __sdk::Result<()> {
-        self.imp.invoke_reducer_with_callback(AddCardArgs { client_time_ms, soul_card_id, card_key,  }, callback)
+        self.imp.invoke_reducer_with_callback(AddCardArgs { client_time_ms, soul_card_id, packed_definition,  }, callback)
     }
 }
 

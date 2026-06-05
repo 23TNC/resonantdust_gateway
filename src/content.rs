@@ -10,47 +10,325 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use resonantdust_data::loader::{load, Bundle};
+use resonantdust_data::locales::Locales;
 
 /// Where the `.rd` corpus lives in-container (overridable via `CONTENT_DIR`).
 const CONTENT_DIR: &str = "/workspace/content/data";
+/// Where the locale JSON lives (`<domain>/<lang>.json`); defaults to a sibling of
+/// the `.rd` corpus. Overridable via `LOCALES_DIR`.
+const LOCALES_SUBDIR: &str = "locales";
+/// The locale language the gate serves today. Multi-lang is a future `?lang=`
+/// parameter on the content endpoint; the loader is already keyed by domain.
+const LOCALE_LANG: &str = "en";
 
-/// Parse every `.rd` under the content dir into a shared [`Bundle`]. Panics on a
-/// bad corpus — a gate serving recipes against broken content is worse than not
-/// starting.
-pub fn load_bundle() -> Arc<Bundle> {
+/// The corpus the gate loaded at startup: the parsed [`Bundle`] it validates
+/// against, plus the **exact same bytes** pre-serialized for the `/content`
+/// endpoint and a version fingerprint. Serving the same corpus the gate runs on
+/// means client and gate agree by construction (no drift).
+pub struct LoadedContent {
+    pub bundle: Arc<Bundle>,
+    /// FNV-1a fingerprint of the `.rd` corpus (the P4 multi-gate invariant).
+    pub version: u64,
+    /// Pre-serialized `GET /content` body: `{version, rd:[[name,text]…],
+    /// locales:[[domain,json]…]}`. Built once; the client feeds `rd` to
+    /// `new Content(...)` and `locales` to `new Locales(...)`.
+    pub payload_json: Arc<str>,
+    /// The raw `(name, text)` `.rd` sources this content was built from, sorted.
+    /// Retained so a runtime `add_content` can rebuild from `sources + new`.
+    pub sources: Vec<(String, String)>,
+    /// The raw `(domain, json)` locale sources, sorted. Retained for the same
+    /// rebuild path.
+    pub locales: Vec<(String, String)>,
+}
+
+/// Subdir (under the content root) that holds runtime-authored sources, kept
+/// separate from the hand-authored base. Files are named `<seq>_<hint>.rd`; the
+/// zero-padded `seq` makes them sort **after** every base dir and **in append
+/// order** among themselves, which is exactly the load order the append-stable
+/// def-ids need. The gate persists here; the dir is gitignored.
+const RUNTIME_SUBDIR: &str = "runtime";
+
+impl LoadedContent {
+    /// A new content set with `text` appended as a runtime source + revalidated.
+    /// `hint` (the client's name) only flavors the generated filename. Errors if
+    /// the merged corpus fails to load; the caller leaves live content untouched
+    /// on `Err`, and persists the new source file only on `Ok`.
+    pub fn with_added_source(&self, hint: String, text: String) -> Result<LoadedContent, String> {
+        // `add` = a NEW lineage. Reject if any def the source declares is already
+        // a known lineage (that's `modify_content`, which versions it) — without
+        // this, a re-add silently replaces a def in place, breaking the
+        // append-only / immutable-version contract.
+        for def in def_headers(&text) {
+            let lin = resonantdust_data::loader::lineage(&def);
+            if self.bundle.card_head(lin).is_some() || self.bundle.recipe_head(lin).is_some() {
+                return Err(format!(
+                    "add_content: lineage {lin:?} already exists — use modify_content to version it"
+                ));
+            }
+        }
+        self.append_runtime(&hint, text)
+    }
+
+    /// A new content set with a fresh **version** of an existing card `lineage`
+    /// appended + revalidated. The submitted `text` defines the modified card
+    /// under its bare logical header (`::apple>`); the gate finds the lineage
+    /// head, assigns the next version, and rewrites the header to
+    /// `::apple.<next>>`. The old version stays (existing instances keep it,
+    /// recipes match the lineage), and `create` now resolves the new head. Errors
+    /// if the lineage doesn't exist (use `add_content`) or the corpus fails to
+    /// load.
+    pub fn with_modified_source(
+        &self,
+        lineage: String,
+        text: String,
+    ) -> Result<LoadedContent, String> {
+        let head = self.bundle.card_head(&lineage).ok_or_else(|| {
+            format!("modify_content: no card lineage {lineage:?} (use add_content)")
+        })?;
+        let next = resonantdust_data::loader::version_of(head) + 1;
+
+        let needle = format!("::{lineage}>");
+        if !text.contains(&needle) {
+            return Err(format!(
+                "modify_content: text must define the card under its logical header `{needle}`"
+            ));
+        }
+        let versioned = text.replacen(&needle, &format!("::{lineage}.{next}>"), 1);
+        self.append_runtime(&format!("{lineage}.{next}"), versioned)
+    }
+
+    /// Append `text` as the next runtime source and rebuild. The source name is
+    /// `runtime/<seq:06>_<hint>.rd` — `seq` = the next free runtime index, so it
+    /// appends after all existing sources (append-stable ids). The new source is
+    /// always `self.sources.last()` on `Ok`, which the caller persists to disk.
+    fn append_runtime(&self, hint: &str, text: String) -> Result<LoadedContent, String> {
+        let seq = self.next_runtime_seq();
+        let hint = hint.strip_suffix(".rd").unwrap_or(hint);
+        let safe: String = hint
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' })
+            .collect();
+        let name = format!("{RUNTIME_SUBDIR}/{seq:06}_{safe}.rd");
+        let mut sources = self.sources.clone();
+        sources.push((name, text));
+        build_content(sources, self.locales.clone())
+    }
+
+    /// The next runtime sequence index = max existing `runtime/<seq>_…` + 1 (0 if
+    /// none). Parsed from the source names load_content read off disk, so it
+    /// survives restart.
+    fn next_runtime_seq(&self) -> u32 {
+        self.sources
+            .iter()
+            .filter_map(|(n, _)| n.strip_prefix(&format!("{RUNTIME_SUBDIR}/")))
+            .filter_map(|rest| rest.get(..6).and_then(|s| s.parse::<u32>().ok()))
+            .max()
+            .map_or(0, |m| m + 1)
+    }
+}
+
+/// Build a [`LoadedContent`] from an authority's `/content` payload — a **peer**
+/// gate's load path. Parses `{rd, locales}` and rebuilds via [`build_content`],
+/// so the peer's bundle + version match the authority's by construction (same
+/// ordered sources → same hash). The peer never touches disk for content.
+pub fn build_from_payload(json: &str) -> Result<LoadedContent, String> {
+    #[derive(serde::Deserialize)]
+    struct Payload {
+        rd: Vec<(String, String)>,
+        locales: Vec<(String, String)>,
+    }
+    let p: Payload =
+        serde_json::from_str(json).map_err(|e| format!("parse /content payload: {e}"))?;
+    build_content(p.rd, p.locales)
+}
+
+/// The def names a `.rd` source declares — each `::name>` header (inline `:facet`
+/// stripped: `::a:visuals>` → `a`). A cheap line scan, enough for `add_content`'s
+/// lineage dedup; full structure parsing happens in `load`.
+fn def_headers(text: &str) -> Vec<String> {
+    text.lines()
+        .filter_map(|l| {
+            let inner = l.trim().strip_prefix("::")?.strip_suffix('>')?;
+            Some(inner.split(':').next().unwrap_or(inner).to_string())
+        })
+        .collect()
+}
+
+/// Persist a runtime source to disk under the content root (so it survives a
+/// gate restart — `load_content` reads it back, sorted after the base by its
+/// `runtime/<seq>` name). `name` is the relative source name (e.g.
+/// `runtime/000000_apple.rd`). The gate's content dir is bind-mounted rw.
+pub fn persist_source(name: &str, text: &str) -> Result<(), String> {
+    let dir = std::env::var("CONTENT_DIR").unwrap_or_else(|_| CONTENT_DIR.to_string());
+    let path = Path::new(&dir).join(name);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("persist {name:?}: mkdir: {e}"))?;
+    }
+    std::fs::write(&path, text).map_err(|e| format!("persist {name:?}: write: {e}"))
+}
+
+/// Parse the `.rd` corpus into a [`Bundle`] and read + validate the locale JSON,
+/// returning everything the gate needs to both run and serve content. Panics on
+/// a bad corpus or bad locale JSON — a gate serving broken content to clients is
+/// worse than not starting.
+pub fn load_content() -> LoadedContent {
     let dir = std::env::var("CONTENT_DIR").unwrap_or_else(|_| CONTENT_DIR.to_string());
     let mut files = Vec::new();
     collect_rd(Path::new(&dir), &mut files);
+    // Sort the disk files so the base corpus loads in a deterministic order —
+    // that order IS the def-id assignment (append-stable), and every gate +
+    // client derives the same ids from it. Runtime `add_content` appends after.
     files.sort();
 
+    // `.rd` sources keyed by path RELATIVE to the corpus root, so the names the
+    // client sees (and error messages) are stable + machine-independent.
     let sources: Vec<(String, String)> = files
         .iter()
         .map(|f| {
             let text = std::fs::read_to_string(f)
                 .unwrap_or_else(|e| panic!("read {}: {e}", f.display()));
-            (f.display().to_string(), text)
+            let name = f.strip_prefix(&dir).unwrap_or(f.as_path()).display().to_string();
+            (name, text)
         })
         .collect();
 
-    match load(&sources) {
-        Ok(bundle) => {
+    let locales = read_locales(&dir);
+    match build_content(sources, locales) {
+        Ok(c) => {
             tracing::info!(
                 dir = %dir,
-                files = sources.len(),
-                cards = bundle.card_ids.len(),
-                recipes = bundle.recipe_ids.len(),
-                aspects = bundle.table.aspects.len(),
+                files = c.sources.len(),
+                locale_domains = c.locales.len(),
+                cards = c.bundle.card_ids.len(),
+                recipes = c.bundle.recipe_ids.len(),
+                aspects = c.bundle.table.aspects.len(),
+                version = %format!("{:016x}", c.version),
                 "content bundle loaded"
             );
-            Arc::new(bundle)
+            c
         }
-        Err(errors) => {
-            for e in errors.iter().take(20) {
-                tracing::error!(file = %e.file, "{}", e.message);
-            }
-            panic!("content load failed: {} problem(s) under {dir}", errors.len());
+        // A gate serving broken content to clients is worse than not starting.
+        Err(e) => panic!("content load failed under {dir}: {e}"),
+    }
+}
+
+/// Build a [`LoadedContent`] from raw sources + locales, validating both —
+/// **non-panicking** so both startup ([`load_content`]) and runtime
+/// `add_content` share one path. Source **order is preserved** (not sorted): it
+/// is the append-stable def-id assignment, so callers control it — `load_content`
+/// serves the base in sorted-file order, `add_content` appends. Returns a
+/// human-readable `Err` on any parse/resolve/locale problem.
+pub fn build_content(
+    sources: Vec<(String, String)>,
+    locales: Vec<(String, String)>,
+) -> Result<LoadedContent, String> {
+    // Content-version fingerprint (P4 invariant): a hash of the ordered
+    // `(name, text)` sources. All gates in a multi-gate deploy MUST agree on the
+    // canonical order (hence `version`) — divergent order means divergent ids.
+    let version = content_version(&sources);
+
+    // Validate the locale JSON (the gate doesn't render strings; this confirms
+    // it parses before we serve it).
+    Locales::load(&locales).map_err(|e| format!("locale load failed: {e}"))?;
+
+    let bundle = load(&sources).map_err(|errors| {
+        let preview: Vec<String> = errors
+            .iter()
+            .take(5)
+            .map(|e| format!("{}: {}", e.file, e.message))
+            .collect();
+        format!("{} problem(s): {}", errors.len(), preview.join("; "))
+    })?;
+
+    let payload_json: Arc<str> = serde_json::to_string(&serde_json::json!({
+        "version": format!("{version:016x}"),
+        "rd": sources,
+        "locales": locales,
+    }))
+    .map_err(|e| format!("serialize content payload: {e}"))?
+    .into();
+
+    Ok(LoadedContent {
+        bundle: Arc::new(bundle),
+        version,
+        payload_json,
+        sources,
+        locales,
+    })
+}
+
+/// Read `<content-root>/locales/<domain>/<lang>.json` for each domain subdir,
+/// returning `(domain, json)` pairs in sorted order (so the payload + any future
+/// fingerprint are deterministic). Missing locale dir → empty (the gate still
+/// serves an empty `locales` array). The corpus root is the parent of the `.rd`
+/// dir; override the whole path via `LOCALES_DIR`.
+fn read_locales(rd_dir: &str) -> Vec<(String, String)> {
+    let locales_dir = std::env::var("LOCALES_DIR").unwrap_or_else(|_| {
+        Path::new(rd_dir)
+            .parent()
+            .unwrap_or(Path::new(rd_dir))
+            .join(LOCALES_SUBDIR)
+            .display()
+            .to_string()
+    });
+    let Ok(entries) = std::fs::read_dir(&locales_dir) else {
+        tracing::warn!(dir = %locales_dir, "no locales dir; serving none");
+        return Vec::new();
+    };
+    let mut out: Vec<(String, String)> = Vec::new();
+    for entry in entries.flatten() {
+        let domain_dir = entry.path();
+        if !domain_dir.is_dir() {
+            continue;
+        }
+        let Some(domain) = domain_dir.file_name().and_then(|s| s.to_str()).map(String::from) else {
+            continue;
+        };
+        let file = domain_dir.join(format!("{LOCALE_LANG}.json"));
+        match std::fs::read_to_string(&file) {
+            Ok(json) => out.push((domain, json)),
+            Err(_) => tracing::warn!(domain = %domain, "no {LOCALE_LANG}.json; skipping"),
         }
     }
+    out.sort();
+    out
+}
+
+/// A stable 64-bit fingerprint of the loaded corpus — FNV-1a over each sorted
+/// source's relative name + bytes. Deterministic across machines (no hashing of
+/// absolute paths or timestamps), so two gates with identical `.rd` log the same
+/// value. Not cryptographic; a deploy-time equality check, not a security gate.
+fn content_version(sources: &[(String, String)]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325; // FNV-1a offset basis
+    let mut feed = |bytes: &[u8]| {
+        for &b in bytes {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x0000_0100_0000_01b3); // FNV prime
+        }
+    };
+    for (name, text) in sources {
+        // hash the file basename (not the absolute path) + contents
+        let base = name.rsplit('/').next().unwrap_or(name);
+        feed(base.as_bytes());
+        feed(b"\0");
+        feed(text.as_bytes());
+        feed(b"\0");
+    }
+    h
+}
+
+/// The folded value of `aspect` on a card def (by name) — its static aspects
+/// with the `satisfies` hierarchy rolled up (so `builder` sums `crafting`, …).
+/// The gate-side replacement for the cards module's old `def_aspect_total`;
+/// used to compute the blueprint builder-cap. `0` for an unknown def/aspect.
+pub fn def_aspect_total(bundle: &Bundle, name: &str, aspect: &str) -> i64 {
+    use resonantdust_data::bridge::{card_view, Card};
+    use resonantdust_data::vm::{Cell, Store};
+    let Some(def_id) = bundle.card_def_id(name) else {
+        return 0;
+    };
+    let view = card_view(bundle, &Card { def_id, stock: Vec::new() });
+    Store::with_root(view).read(&format!("aspect.{aspect}")).map(Cell::as_int).unwrap_or(0)
 }
 
 fn collect_rd(dir: &Path, out: &mut Vec<PathBuf>) {

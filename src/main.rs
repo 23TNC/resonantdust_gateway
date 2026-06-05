@@ -9,15 +9,19 @@ mod bindings;
 mod config;
 mod connections;
 mod content;
+mod dsl_recipe;
 mod gather;
 mod propose;
 mod protocol;
 mod routing;
 mod validation;
+mod worldgen;
 mod ws;
 
 use std::sync::Arc;
 
+use axum::extract::State;
+use axum::response::IntoResponse;
 use axum::{routing::get, Router};
 use tokio::net::TcpListener;
 use tokio::signal;
@@ -39,13 +43,39 @@ async fn main() {
     let cfg = config::GateConfig::from_env();
     tracing::info!(uri = %cfg.uri, env = %cfg.env, "gate config");
 
-    // Load the DSL content bundle (the runtime recipe engine) before serving.
-    let content = content::load_bundle();
+    // Load the DSL content (the runtime recipe engine + the corpus served to
+    // clients) before serving. Topology:
+    //   • authority (`GATE_CONTENT_AUTHORITY` unset) — reads `.rd` from disk,
+    //     serves `/content`, accepts add/modify, owns the canonical files.
+    //   • peer (`GATE_CONTENT_AUTHORITY=<url>`) — fetches `/content` from the
+    //     authority at startup and polls `<url>/content-version` for changes,
+    //     mirroring the corpus in memory. Authoring is rejected on peers.
+    // Propagation is HTTP authority→peer→client; SpacetimeDB stays game-only.
+    let authority = cfg.content_authority.clone();
+    let content = match &authority {
+        None => {
+            tracing::info!("content: authority (disk-backed)");
+            content::load_content()
+        }
+        Some(url) => {
+            tracing::info!(%url, "content: peer (fetching from authority)");
+            fetch_authority_content(url).await
+        }
+    };
     let pool = Arc::new(connections::Pool::new(cfg, content));
+
+    // A peer keeps its in-memory corpus in sync by polling the authority.
+    if authority.is_some() {
+        spawn_content_poll(pool.clone());
+    }
 
     let app = Router::new()
         .route("/health", get(health))
         .route("/ws", get(ws::handler))
+        // Server-authoritative content: clients load the same `.rd` corpus +
+        // locales the gate validates against, so they agree by construction.
+        .route("/content", get(serve_content))
+        .route("/content-version", get(serve_content_version))
         .with_state(pool);
 
     let listener = match TcpListener::bind(&listen).await {
@@ -77,6 +107,111 @@ async fn main() {
 /// and manual `curl`.
 async fn health() -> &'static str {
     "ok"
+}
+
+/// Fetch + build the corpus from the content authority — a **peer**'s startup
+/// load. Retries on a fixed backoff so a peer can start before/alongside the
+/// authority; exits the process if the authority stays unreachable (a peer with
+/// no content can't serve clients).
+async fn fetch_authority_content(url: &str) -> content::LoadedContent {
+    let endpoint = format!("{}/content", url.trim_end_matches('/'));
+    let client = connections::http_client();
+    for attempt in 1..=30u32 {
+        match client.get(&endpoint).send().await {
+            Ok(resp) => match resp.text().await {
+                Ok(body) => match content::build_from_payload(&body) {
+                    Ok(c) => {
+                        tracing::info!(%endpoint, "content: fetched from authority");
+                        return c;
+                    }
+                    Err(e) => tracing::error!(%endpoint, error = %e, "content: bad authority payload"),
+                },
+                Err(e) => tracing::warn!(%endpoint, error = %e, "content: read body failed"),
+            },
+            Err(e) => {
+                tracing::warn!(%endpoint, attempt, error = %e, "content: authority unreachable, retrying")
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+    tracing::error!(%endpoint, "content: authority unreachable after retries; exiting");
+    std::process::exit(1);
+}
+
+/// Spawn the peer poll loop. Every few seconds it reads the authority's
+/// `/content-version`; on a change it re-fetches `/content`, hot-swaps the live
+/// corpus, and broadcasts `content_changed` to this peer's own clients (who then
+/// reload from this gate). This is the authority→peer→client propagation path —
+/// no content ever touches SpacetimeDB.
+fn spawn_content_poll(pool: Arc<connections::Pool>) {
+    let Some(base) = pool.content_authority().map(|s| s.trim_end_matches('/').to_string()) else {
+        return; // not a peer — nothing to poll
+    };
+    let ver_url = format!("{base}/content-version");
+    let content_url = format!("{base}/content");
+    tokio::spawn(async move {
+        let client = connections::http_client();
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(3));
+        loop {
+            tick.tick().await;
+            let remote = match client.get(&ver_url).send().await {
+                Ok(r) => match r.text().await {
+                    Ok(t) => t.trim().to_string(),
+                    Err(_) => continue,
+                },
+                Err(_) => continue, // authority blip — try again next tick
+            };
+            if remote.is_empty() || remote == pool.content_version_hex() {
+                continue;
+            }
+            let body = match client.get(&content_url).send().await {
+                Ok(r) => match r.text().await {
+                    Ok(t) => t,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "peer: read /content failed");
+                        continue;
+                    }
+                },
+                Err(e) => {
+                    tracing::warn!(error = %e, "peer: fetch /content failed");
+                    continue;
+                }
+            };
+            match content::build_from_payload(&body) {
+                Ok(next) => {
+                    pool.swap_content(next);
+                    let version = pool.content_version_hex();
+                    tracing::info!(%version, "peer: content updated from authority");
+                    pool.broadcast(protocol::GateMsg::content_changed(version));
+                }
+                Err(e) => tracing::warn!(error = %e, "peer: bad authority payload"),
+            }
+        }
+    });
+}
+
+/// `GET /content` — the full corpus the client loads: `{version, rd, locales}`,
+/// pre-serialized at startup. `rd` feeds `new Content(...)`, `locales` feeds
+/// `new Locales(...)`. The exact bytes the gate validates against.
+async fn serve_content(State(pool): State<Arc<connections::Pool>>) -> impl IntoResponse {
+    (
+        [
+            (axum::http::header::CONTENT_TYPE, "application/json"),
+            // The client is served from a different origin (its own dev server /
+            // CDN) than the gate, so the content fetch is cross-origin.
+            (axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
+        ],
+        pool.content_json().to_string(),
+    )
+}
+
+/// `GET /content-version` — just the corpus fingerprint (hex). Cheap to poll;
+/// the client compares it to detect a content change (live reload, later).
+async fn serve_content_version(State(pool): State<Arc<connections::Pool>>) -> impl IntoResponse {
+    (
+        [(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")],
+        pool.content_version_hex(),
+    )
 }
 
 /// Initialize `tracing` as the single logging path (the Rust analog of the
