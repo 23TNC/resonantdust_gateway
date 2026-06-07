@@ -19,8 +19,9 @@ pub struct Card {
     pub micro_location: u32,
     pub owner_id: u32,
     pub packed_definition: u16,
-    pub flags_state: u32,
-    pub flags_bk: u32,
+    pub flags: u32,
+    pub flags_bk: u8,
+    pub stock: u8,
 }
 
 
@@ -39,8 +40,9 @@ pub struct CardCols {
     pub micro_location: __sdk::__query_builder::Col<Card, u32>,
     pub owner_id: __sdk::__query_builder::Col<Card, u32>,
     pub packed_definition: __sdk::__query_builder::Col<Card, u16>,
-    pub flags_state: __sdk::__query_builder::Col<Card, u32>,
-    pub flags_bk: __sdk::__query_builder::Col<Card, u32>,
+    pub flags: __sdk::__query_builder::Col<Card, u32>,
+    pub flags_bk: __sdk::__query_builder::Col<Card, u8>,
+    pub stock: __sdk::__query_builder::Col<Card, u8>,
 }
 
 impl __sdk::__query_builder::HasCols for Card {
@@ -53,8 +55,9 @@ impl __sdk::__query_builder::HasCols for Card {
             micro_location: __sdk::__query_builder::Col::new(table_name, "micro_location"),
             owner_id: __sdk::__query_builder::Col::new(table_name, "owner_id"),
             packed_definition: __sdk::__query_builder::Col::new(table_name, "packed_definition"),
-            flags_state: __sdk::__query_builder::Col::new(table_name, "flags_state"),
+            flags: __sdk::__query_builder::Col::new(table_name, "flags"),
             flags_bk: __sdk::__query_builder::Col::new(table_name, "flags_bk"),
+            stock: __sdk::__query_builder::Col::new(table_name, "stock"),
 
         }
     }

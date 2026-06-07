@@ -20,7 +20,7 @@ use crate::apply;
 use crate::connections::Pool;
 use crate::dsl_recipe;
 use crate::gather::{gather, synthetic_tile, Proposal};
-use crate::protocol::GateMsg;
+use resonantdust_data::protocol::GateMsg;
 
 /// Handle a `propose_action` call: run the pipeline and reply CallOk/CallErr.
 pub async fn handle(pool: &Arc<Pool>, tx: &UnboundedSender<String>, cid: u32, args: Value) {
@@ -85,8 +85,8 @@ async fn propose(pool: &Pool, args: Value) -> Result<(), String> {
     )?;
 
     // State validation (orthogonal to recipe semantics): existence, not-dead,
-    // holds, ownership, dup, magnetic-lock. `wants_exclusive` comes from the
-    // plan's per-card `slot_hold`; `magnetic_recipe` from the Bundle.
+    // holds, ownership, dup. `wants_exclusive` comes from the plan's per-card
+    // `slot_hold`.
     validate_bindings(
         &snap,
         proposal.recipe_id,
@@ -95,7 +95,6 @@ async fn propose(pool: &Pool, args: Value) -> Result<(), String> {
         caller_player_id,
         now_ms,
         |card_id| plan.holds.get(&card_id).is_some_and(|h| h.slot_hold),
-        |packed| bundle.magnetic_recipe_id(packed),
     )?;
 
     // Apply across the shards (future-stamped at completion).

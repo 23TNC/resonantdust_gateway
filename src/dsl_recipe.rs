@@ -260,7 +260,7 @@ fn resolve_target(
                     .cards
                     .get(&cid)
                     .ok_or_else(|| format!("parent step: card {cid} not in snapshot"))?;
-                if !card_model::micro_is_card(c.flags_bk) {
+                if !card_model::micro_is_card(c.flags) {
                     return Err(format!("parent step: card {cid} is not stacked"));
                 }
                 cid = c.micro_location;

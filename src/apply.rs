@@ -1,13 +1,20 @@
-//! Apply — decompose a validated [`ActionPlan`] into the narrow reducer calls
-//! that materialize it on the `cards` shard.
+//! Apply — materialize a validated [`ActionPlan`] on the data shards.
 //!
-//! No cross-DB transaction exists, so this is a best-effort sequence of
-//! idempotent, future-stamped `/call`s; the dedup gate (`claim_pending`) guards
-//! exact-duplicate submission and the per-card holds guard conflicting actions.
-//! Ordering mirrors `shard::propose_action`: dedup → chain-stitch (now) →
-//! acquire holds (now) → completion effects (future) → release holds (future).
+//! One coarse reducer call PER DATABASE: `apply_action_tile` on the region DB
+//! (the synthetic tile) and `apply_action` on the cards DB (bound cards + the
+//! card-side effects). Each runs in a single transaction, so the client receives
+//! one commit per shard — one `now` row + one fully-formed `completion` row per
+//! card — instead of the old one-call-per-hold-kind/effect decomposition (which
+//! let the client promote a half-written completion row → the cut-tree flicker).
 //!
-//! Card-only v1: `Effect::CreateDeferred` (stack.N.create) and the world-terrain
+//! No cross-DB transaction exists, so the two calls are sequenced: the tile
+//! first (its exclusive `slot_hold` is the most-contended guard, so a
+//! concurrent-cut rejection fails fast before the cards DB is touched), then the
+//! cards apply. Each coarse reducer still writes its own self-expiring release
+//! rows, so a partial cross-shard failure self-heals at `completion_ms`. The
+//! dedup gate (`claim_pending`) guards exact-duplicate submission.
+//!
+//! Card-only v1: `Effect::CreateDeferred` (stack.N.create) and world-terrain
 //! effects are rejected upstream in the content planner; this never sees them.
 
 use std::collections::BTreeSet;
@@ -24,7 +31,7 @@ use crate::gather::{Proposal, Snapshot};
 /// Single `cards` shard today (owner-sharding is future work).
 const CARDS_SHARD: u16 = 0;
 
-// Hold-kind selectors — must match `cards::gate_api::hold_kind`.
+// Hold-kind bit positions — must match `shard::gate_api::hold_kind`.
 const K_TOUCH: u8 = 0;
 const K_SLOT_HOLD: u8 = 1;
 const K_SLOT_SHARE: u8 = 2;
@@ -35,13 +42,13 @@ const K_POSITION_HOLD: u8 = 3;
 const SOUL_CARD_TYPE: u8 = 6;
 
 /// Soul-stat slot for a stat-card name → `(field, byte_index)` where field is
-/// the `set_soul_stat` selector (0=stats, 1=fatigued, 2=injured) and byte is
-/// corpus=0/anima=1/sollertia=2/aether=3. The gate owns this mapping now (it was
-/// the cards module's `stat_map`). `None` for non-stat cards.
+/// the soul-stat selector (0=stats, 1=fatigued, 2=injured) and byte is
+/// corpus=0/anima=1/sollertia=2/aether=3. The gate owns this mapping. `None` for
+/// non-stat cards.
 fn stat_slot(name: &str) -> Option<(u8, u8)> {
     let (field, base) = match name.strip_suffix("_dim") {
-        Some(b) => (1u8, b),      // fatigued
-        None => (0u8, name),      // stats
+        Some(b) => (1u8, b), // fatigued
+        None => (0u8, name), // stats
     };
     let byte = match base {
         "corpus" => 0,
@@ -70,9 +77,41 @@ fn owning_soul(snap: &Snapshot, card_id: u32) -> Option<u32> {
     None
 }
 
-/// Materialize `plan` for `proposal` on the cards shard. `now_ms` stamps the
-/// hold acquires (which lock the bound cards in place); completion effects, hold
-/// releases, and the per-card finalize are future-stamped at
+/// Per-card hold bitmask for a HELD bound card: `touch` (always — a held card is
+/// kept alive) plus the verb's fields. Bit `i` = hold-kind `i`.
+fn hold_mask(kinds: &HoldKinds) -> u8 {
+    let mut m = 1u8 << K_TOUCH;
+    if kinds.slot_hold {
+        m |= 1 << K_SLOT_HOLD;
+    }
+    if kinds.slot_share {
+        m |= 1 << K_SLOT_SHARE;
+    }
+    if kinds.position_hold {
+        m |= 1 << K_POSITION_HOLD;
+    }
+    m
+}
+
+/// Tile hold bitmask — like [`hold_mask`] but WITHOUT `touch` (tiles were never
+/// touch-held; matches the retired `tile_lease`).
+fn tile_hold_mask(kinds: &HoldKinds) -> u8 {
+    let mut m = 0u8;
+    if kinds.slot_hold {
+        m |= 1 << K_SLOT_HOLD;
+    }
+    if kinds.slot_share {
+        m |= 1 << K_SLOT_SHARE;
+    }
+    if kinds.position_hold {
+        m |= 1 << K_POSITION_HOLD;
+    }
+    m
+}
+
+/// Materialize `plan` for `proposal`. `now_ms` stamps the hold acquires (which
+/// lock the bound cards / tile in place for the action's life); the releases,
+/// per-card finalize, and completion effects are future-stamped at
 /// `now_ms + plan.duration_ms()`.
 pub async fn apply(
     pool: &Pool,
@@ -82,14 +121,14 @@ pub async fn apply(
     now_ms: u64,
 ) -> Result<(), String> {
     let completion_ms = now_ms + plan.duration_ms();
-    let db = pool.config().cards_db(CARDS_SHARD);
+    let cards_db = pool.config().cards_db(CARDS_SHARD);
     let client = crate::connections::http_client().clone();
 
-    // 1. Dedup gate — reject duplicates before any writes land.
+    // 1. Dedup gate — gate-only (`pending_actions` is never relayed to clients).
     call(
         &client,
         pool,
-        &db,
+        &cards_db,
         "claim_pending",
         json!({
             "recipe_id": proposal.recipe_id,
@@ -100,161 +139,45 @@ pub async fn apply(
     )
     .await?;
 
-    // 2. We do NOT re-write input positions. The bound stack is canonical —
-    //    it's exactly the configuration the recipe validated against — so we
-    //    lock the cards where they already are via the holds below. (The
-    //    monolith's chain-stitch re-indexed members by their binding *offset*,
-    //    which is a recipe slot, not a stack position, and would relocate a
-    //    player-placed card. Output positioning is a separate concern, handled
-    //    by the Create effects.)
-
-    // 2b. Promote + LEASE the action's tile when the recipe targets a synthetic
-    //     tile: a single `acquire_tile_lease` takes the hold at now_ms AND writes
-    //     its release at completion_ms atomically. An exclusive slot_hold already
-    //     held → the reducer rejects → this apply aborts → the client gets
-    //     `call_err`. That is the multi-gate concurrent-action guard; the lease
-    //     means any leases already taken self-expire at completion_ms, so no
-    //     rollback is needed on a fail-fast abort.
+    // 2. Tile (region DB) — one transaction, when the recipe targets the
+    //    synthetic tile. First, so the exclusive-cut guard fails fast.
     if let Some(kinds) = &plan.tile_holds {
-        tile_lease(&client, pool, proposal, kinds, now_ms, completion_ms).await?;
+        let (q, r) = micro_loose_cell(proposal.micro_location);
+        let mut stock_slots: Vec<u8> = Vec::new();
+        let mut stock_ops: Vec<u8> = Vec::new();
+        let mut stock_deltas: Vec<u8> = Vec::new();
+        for effect in &plan.effects {
+            if let Effect::ModifyTileStock { slot, op, delta } = effect {
+                stock_slots.push(*slot);
+                stock_ops.push(op.code());
+                stock_deltas.push(*delta);
+            }
+        }
+        let regions_db = pool.regions_db();
+        call(
+            &client,
+            pool,
+            &regions_db,
+            "apply_action_tile",
+            json!({
+                "now_ms": now_ms,
+                "completion_ms": completion_ms,
+                "surface": proposal.surface,
+                "macro_zone": proposal.macro_zone,
+                "q": q,
+                "r": r,
+                "hold_mask": tile_hold_mask(kinds),
+                "stock_slots": stock_slots,
+                "stock_ops": stock_ops,
+                "stock_deltas": stock_deltas,
+            }),
+        )
+        .await?;
     }
 
-    // 3. LEASE holds at now_ms→completion_ms (touch always; flavors per plan).
-    //    Each `acquire_lease` is a self-expiring lock: it acquires now and writes
-    //    its own release at completion, atomically, and the exclusive verbs
-    //    check-and-set (reject if already held) — so two gates racing the same
-    //    card resolve to one winner, the loser fail-fast aborts here.
-    for (&card_id, kinds) in &plan.holds {
-        if card_id == 0 {
-            continue;
-        }
-        card_lease(&client, pool, &db, card_id, K_TOUCH, now_ms, completion_ms).await?;
-        if kinds.slot_hold {
-            card_lease(&client, pool, &db, card_id, K_SLOT_HOLD, now_ms, completion_ms).await?;
-        }
-        if kinds.slot_share {
-            card_lease(&client, pool, &db, card_id, K_SLOT_SHARE, now_ms, completion_ms).await?;
-        }
-        if kinds.position_hold {
-            card_lease(&client, pool, &db, card_id, K_POSITION_HOLD, now_ms, completion_ms).await?;
-        }
-    }
-
-    // 4. Completion effects, future-stamped at completion_ms.
-    for effect in &plan.effects {
-        match effect {
-            Effect::Destroy { card_id } => {
-                call(
-                    &client,
-                    pool,
-                    &db,
-                    "destroy_card",
-                    json!({ "card_id": card_id, "time_ms": completion_ms }),
-                )
-                .await?;
-                // Soul-stats (gate-owned): a destroyed stat card decrements its
-                // soul's counter. Resolve name → slot → owning soul from the snap.
-                if let Some(card) = snap.cards.get(card_id) {
-                    if let Some((field, byte)) =
-                        pool.content().name_for_packed(card.packed_definition).and_then(stat_slot)
-                    {
-                        if let Some(soul) = owning_soul(snap, card.owner_id) {
-                            soul_stat(&client, pool, &db, soul, field, byte, -1, completion_ms).await?;
-                        }
-                    }
-                }
-            }
-            Effect::Create {
-                def_key,
-                surface,
-                macro_zone,
-                owner_id,
-            } => {
-                // The gate resolves the def name → packed_def from its Bundle;
-                // the module just stores the opaque id (content-agnostic).
-                let packed_def = pool
-                    .content()
-                    .packed_def(def_key)
-                    .ok_or_else(|| format!("create: def {def_key:?} not in DSL content"))?;
-                call(
-                    &client,
-                    pool,
-                    &db,
-                    "create_card",
-                    json!({
-                        "time_ms": completion_ms,
-                        "packed_def": packed_def,
-                        "surface": surface,
-                        "macro_zone": macro_zone,
-                        "owner_id": owner_id,
-                    }),
-                )
-                .await?;
-                // Soul-stats (gate-owned): a created stat card increments its
-                // soul's counter.
-                if let Some((field, byte)) = stat_slot(def_key) {
-                    if let Some(soul) = owning_soul(snap, *owner_id) {
-                        soul_stat(&client, pool, &db, soul, field, byte, 1, completion_ms).await?;
-                    }
-                }
-            }
-            Effect::CreateDeferred { .. } => {
-                return Err(
-                    "apply: CreateDeferred (stack.N.create) not yet supported in gateway v1"
-                        .to_string(),
-                );
-            }
-            Effect::ModifyTileStock { slot, op, delta } => {
-                // Cross-DB: the tile lives in the regions zone. It was already
-                // promoted + locked up front (step 2b), so this only mutates its
-                // stock, future-stamped at completion. (set_tile_stock still
-                // find-or-creates defensively.) Cell comes from the proposal.
-                let (q, r) = micro_loose_cell(proposal.micro_location);
-                let regions_db = pool.regions_db();
-                call(
-                    &client,
-                    pool,
-                    &regions_db,
-                    "set_tile_stock",
-                    json!({
-                        "time_ms": completion_ms,
-                        "surface": proposal.surface,
-                        "macro_zone": proposal.macro_zone,
-                        "q": q,
-                        "r": r,
-                        "slot": slot,
-                        "op": op.code(),
-                        "delta": delta,
-                    }),
-                )
-                .await?;
-            }
-            Effect::UnlockBlueprint {
-                blueprint_id,
-                target_card_id,
-            } => {
-                // Card-side: set the discovery bit on the soul's SoulPrivate.
-                // blueprint_id is the Bundle id (resolved at plan translation).
-                call(
-                    &client,
-                    pool,
-                    &db,
-                    "unlock_blueprint",
-                    json!({ "target_card_id": target_card_id, "blueprint_id": blueprint_id }),
-                )
-                .await?;
-            }
-        }
-    }
-
-    // 5. Releases are NOT a separate pass — each lease in steps 2b/3 already
-    //    wrote its own release at completion_ms (self-expiring lock). Once a
-    //    tile-card is hold-free and clean, the regions GC sweep demotes it.
-
-    // 6. Finalize every bound card at completion_ms: clear pos_need/pos_want and
-    //    stamp progress_style (0 = no bar) so the actor's progress bar renders on
-    //    its completion row. Root + all bindings, deduped. Composes with the
-    //    dead/hold-release writes already made at completion_ms.
+    // 3. Cards DB — one transaction. Bound set = root + bindings (deduped, minus
+    //    the sentinel-0 tile). A held card's mask is `touch | verb fields`; a
+    //    bound-but-unheld card's mask is 0 (it only needs finalizing).
     let mut bound: BTreeSet<u32> = BTreeSet::new();
     if proposal.root != 0 {
         bound.insert(proposal.root);
@@ -266,106 +189,111 @@ pub async fn apply(
             }
         }
     }
-    for &card_id in &bound {
-        let style = plan.styles.get(&card_id).copied().unwrap_or(0);
-        call(
-            &client,
-            pool,
-            &db,
-            "finalize_card",
-            json!({ "card_id": card_id, "time_ms": completion_ms, "progress_style": style }),
-        )
-        .await?;
+    let bound_ids: Vec<u32> = bound.iter().copied().collect();
+    let bound_masks: Vec<u8> = bound_ids
+        .iter()
+        .map(|id| plan.holds.get(id).map(hold_mask).unwrap_or(0))
+        .collect();
+
+    // Effects → parallel arrays. Soul-stat deltas are gate-resolved here from the
+    // snapshot + content (the gate owns the stat-card → soul mapping), then
+    // applied inside the reducer.
+    let mut destroy_ids: Vec<u32> = Vec::new();
+    let mut create_defs: Vec<u16> = Vec::new();
+    let mut create_surfaces: Vec<u8> = Vec::new();
+    let mut create_macro_zones: Vec<u64> = Vec::new();
+    let mut create_owners: Vec<u32> = Vec::new();
+    let mut unlock_targets: Vec<u32> = Vec::new();
+    let mut unlock_blueprints: Vec<u16> = Vec::new();
+    let mut stat_souls: Vec<u32> = Vec::new();
+    let mut stat_fields: Vec<u8> = Vec::new();
+    let mut stat_bytes: Vec<u8> = Vec::new();
+    let mut stat_deltas: Vec<i8> = Vec::new();
+
+    for effect in &plan.effects {
+        match effect {
+            Effect::Destroy { card_id } => {
+                destroy_ids.push(*card_id);
+                // A destroyed stat card decrements its soul's counter.
+                if let Some(card) = snap.cards.get(card_id) {
+                    if let Some((field, byte)) =
+                        pool.content().name_for_packed(card.packed_definition).and_then(stat_slot)
+                    {
+                        if let Some(soul) = owning_soul(snap, card.owner_id) {
+                            stat_souls.push(soul);
+                            stat_fields.push(field);
+                            stat_bytes.push(byte);
+                            stat_deltas.push(-1);
+                        }
+                    }
+                }
+            }
+            Effect::Create {
+                def_key,
+                surface,
+                macro_zone,
+                owner_id,
+            } => {
+                let packed_def = pool
+                    .content()
+                    .packed_def(def_key)
+                    .ok_or_else(|| format!("create: def {def_key:?} not in DSL content"))?;
+                create_defs.push(packed_def);
+                create_surfaces.push(*surface);
+                create_macro_zones.push(*macro_zone);
+                create_owners.push(*owner_id);
+                // A created stat card increments its soul's counter.
+                if let Some((field, byte)) = stat_slot(def_key) {
+                    if let Some(soul) = owning_soul(snap, *owner_id) {
+                        stat_souls.push(soul);
+                        stat_fields.push(field);
+                        stat_bytes.push(byte);
+                        stat_deltas.push(1);
+                    }
+                }
+            }
+            Effect::CreateDeferred { .. } => {
+                return Err(
+                    "apply: CreateDeferred (stack.N.create) not yet supported in gateway v1"
+                        .to_string(),
+                );
+            }
+            Effect::ModifyTileStock { .. } => { /* applied on the region DB above */ }
+            Effect::UnlockBlueprint {
+                blueprint_id,
+                target_card_id,
+            } => {
+                unlock_targets.push(*target_card_id);
+                unlock_blueprints.push(*blueprint_id);
+            }
+        }
     }
 
-    // Note: `release_pending` is NOT called — the dedup row persists until
-    // `completion_ms` and is reaped by the cards GC, so a resubmit of the same
-    // tuple is rejected for the action's full lifetime.
-    Ok(())
-}
-
-/// Push a soul-stat delta to the cards shard (`set_soul_stat`) — the gate-owned
-/// soul-stats path. `field`: 0=stats, 1=fatigued, 2=injured.
-#[allow(clippy::too_many_arguments)]
-async fn soul_stat(
-    client: &reqwest::Client,
-    pool: &Pool,
-    db: &str,
-    soul_card_id: u32,
-    field: u8,
-    byte_index: u8,
-    delta: i8,
-    time_ms: u64,
-) -> Result<(), String> {
     call(
-        client,
+        &client,
         pool,
-        db,
-        "set_soul_stat",
+        &cards_db,
+        "apply_action",
         json!({
-            "soul_card_id": soul_card_id,
-            "field": field,
-            "byte_index": byte_index,
-            "delta": delta,
-            "time_ms": time_ms,
+            "now_ms": now_ms,
+            "completion_ms": completion_ms,
+            "bound_ids": bound_ids,
+            "bound_masks": bound_masks,
+            "destroy_ids": destroy_ids,
+            "create_defs": create_defs,
+            "create_surfaces": create_surfaces,
+            "create_macro_zones": create_macro_zones,
+            "create_owners": create_owners,
+            "unlock_targets": unlock_targets,
+            "unlock_blueprints": unlock_blueprints,
+            "stat_souls": stat_souls,
+            "stat_fields": stat_fields,
+            "stat_bytes": stat_bytes,
+            "stat_deltas": stat_deltas,
         }),
     )
-    .await
-}
+    .await?;
 
-/// Take a self-expiring lease of hold `kind` on a `cards`-shard card:
-/// `acquire_lease` acquires at `acquire_ms` and writes the release at
-/// `release_ms` in one transaction, rejecting (→ caller's `?` aborts) if an
-/// exclusive kind is already held.
-async fn card_lease(
-    client: &reqwest::Client,
-    pool: &Pool,
-    db: &str,
-    card_id: u32,
-    kind: u8,
-    acquire_ms: u64,
-    release_ms: u64,
-) -> Result<(), String> {
-    call(
-        client,
-        pool,
-        db,
-        "acquire_lease",
-        json!({ "card_id": card_id, "kind": kind, "acquire_ms": acquire_ms, "release_ms": release_ms }),
-    )
-    .await
-}
-
-/// Lease the action's **synthetic-tile** holds on the regions tile-card at the
-/// proposal's cell — position-keyed, so the gate never needs the tile-card's id.
-/// `acquire_tile_lease` promotes + holds at `acquire_ms` and writes the release
-/// at `release_ms`; an exclusive slot_hold already held → reject → caller aborts.
-async fn tile_lease(
-    client: &reqwest::Client,
-    pool: &Pool,
-    proposal: &Proposal,
-    kinds: &HoldKinds,
-    acquire_ms: u64,
-    release_ms: u64,
-) -> Result<(), String> {
-    let (q, r) = micro_loose_cell(proposal.micro_location);
-    let db = pool.regions_db();
-    let base = |kind: u8| {
-        json!({
-            "surface": proposal.surface,
-            "macro_zone": proposal.macro_zone,
-            "q": q,
-            "r": r,
-            "kind": kind,
-            "acquire_ms": acquire_ms,
-            "release_ms": release_ms,
-        })
-    };
-    let kind = if kinds.slot_hold { K_SLOT_HOLD } else { K_SLOT_SHARE };
-    call(client, pool, &db, "acquire_tile_lease", base(kind)).await?;
-    if kinds.position_hold {
-        call(client, pool, &db, "acquire_tile_lease", base(K_POSITION_HOLD)).await?;
-    }
     Ok(())
 }
 

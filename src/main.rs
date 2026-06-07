@@ -12,7 +12,6 @@ mod content;
 mod dsl_recipe;
 mod gather;
 mod propose;
-mod protocol;
 mod routing;
 mod validation;
 mod worldgen;
@@ -182,7 +181,7 @@ fn spawn_content_poll(pool: Arc<connections::Pool>) {
                     pool.swap_content(next);
                     let version = pool.content_version_hex();
                     tracing::info!(%version, "peer: content updated from authority");
-                    pool.broadcast(protocol::GateMsg::content_changed(version));
+                    pool.broadcast(resonantdust_data::protocol::GateMsg::content_changed(version));
                 }
                 Err(e) => tracing::warn!(error = %e, "peer: bad authority payload"),
             }

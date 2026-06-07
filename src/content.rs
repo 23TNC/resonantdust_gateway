@@ -14,6 +14,11 @@ use resonantdust_data::locales::Locales;
 
 /// Where the `.rd` corpus lives in-container (overridable via `CONTENT_DIR`).
 const CONTENT_DIR: &str = "/workspace/content/data";
+/// Sibling tree holding the client-only `:visuals` facets (same `::name` keys as
+/// `data/`), loaded after the data corpus so each visuals facet folds onto its
+/// already-defined card. Defaults to a sibling of `CONTENT_DIR`; override via
+/// `VISUALS_DIR`.
+const VISUALS_SUBDIR: &str = "visuals";
 /// Where the locale JSON lives (`<domain>/<lang>.json`); defaults to a sibling of
 /// the `.rd` corpus. Overridable via `LOCALES_DIR`.
 const LOCALES_SUBDIR: &str = "locales";
@@ -173,24 +178,41 @@ pub fn persist_source(name: &str, text: &str) -> Result<(), String> {
 /// worse than not starting.
 pub fn load_content() -> LoadedContent {
     let dir = std::env::var("CONTENT_DIR").unwrap_or_else(|_| CONTENT_DIR.to_string());
-    let mut files = Vec::new();
-    collect_rd(Path::new(&dir), &mut files);
-    // Sort the disk files so the base corpus loads in a deterministic order —
-    // that order IS the def-id assignment (append-stable), and every gate +
-    // client derives the same ids from it. Runtime `add_content` appends after.
-    files.sort();
+    // The base corpus is two parallel trees: `data/` (server-authoritative card
+    // logic) and a sibling `visuals/` (client-only render facets, same `::name`
+    // keys). Load data FIRST so a card's def-id derives from its `:data` file;
+    // the loader then folds each `:visuals` facet onto the existing def (see
+    // loader::index_defs). Within each tree, sorted order IS the append-stable
+    // id assignment; visuals never introduce or renumber a def.
+    let visuals_dir = std::env::var("VISUALS_DIR").unwrap_or_else(|_| {
+        Path::new(&dir)
+            .parent()
+            .unwrap_or(Path::new(&dir))
+            .join(VISUALS_SUBDIR)
+            .display()
+            .to_string()
+    });
 
-    // `.rd` sources keyed by path RELATIVE to the corpus root, so the names the
-    // client sees (and error messages) are stable + machine-independent.
-    let sources: Vec<(String, String)> = files
-        .iter()
-        .map(|f| {
-            let text = std::fs::read_to_string(f)
-                .unwrap_or_else(|e| panic!("read {}: {e}", f.display()));
-            let name = f.strip_prefix(&dir).unwrap_or(f.as_path()).display().to_string();
-            (name, text)
-        })
-        .collect();
+    // Collect one tree into `(name, text)` sources, sorted, with names keyed by
+    // path RELATIVE to that tree's root (under `prefix`) — so the names the client
+    // sees + error messages are stable + machine-independent.
+    let read_tree = |root: &str, prefix: &str| -> Vec<(String, String)> {
+        let mut files = Vec::new();
+        collect_rd(Path::new(root), &mut files);
+        files.sort();
+        files
+            .iter()
+            .map(|f| {
+                let text = std::fs::read_to_string(f)
+                    .unwrap_or_else(|e| panic!("read {}: {e}", f.display()));
+                let rel = f.strip_prefix(root).unwrap_or(f.as_path()).display().to_string();
+                (format!("{prefix}{rel}"), text)
+            })
+            .collect()
+    };
+
+    let mut sources = read_tree(&dir, "");
+    sources.extend(read_tree(&visuals_dir, "visuals/"));
 
     let locales = read_locales(&dir);
     match build_content(sources, locales) {

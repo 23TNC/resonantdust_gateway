@@ -72,18 +72,18 @@ impl Proposal {
 #[derive(Default)]
 pub struct Snapshot {
     /// Every card in the operating set, keyed by `card_id` (latest version).
-    pub cards: HashMap<u32, bindings::cards::Card>,
+    pub cards: HashMap<u32, bindings::shard::Card>,
     /// The zone the action lands in, if it exists.
-    pub zone: Option<bindings::regions::Zone>,
+    pub zone: Option<bindings::shard::Zone>,
     /// A promoted tile-card at the action cell (regions DB), if one exists. Takes
     /// priority over the zone slot when deriving the synthetic tile, so a
     /// repeated action reads the live (decremented / held) stock rather than the
     /// stale zone bytes (the zone only catches up on GC demotion).
-    pub tile_card: Option<bindings::regions::Card>,
+    pub tile_card: Option<bindings::shard::Card>,
     /// The region containing that zone, if it exists.
-    pub region: Option<bindings::regions::Region>,
+    pub region: Option<bindings::shard::Region>,
     /// The region's per-`data_shard` card-shard ref counts (latest each).
-    pub card_shards: Vec<bindings::regions::CardShard>,
+    pub card_shards: Vec<bindings::shard::CardShard>,
     /// Which `regions` shard holds the region, if assigned.
     pub region_shard: Option<bindings::regionindex::RegionShard>,
 }
@@ -115,12 +115,12 @@ impl std::fmt::Display for GatherError {
 /// subscribes the given queries on `$module`'s connection and awaits the
 /// `on_applied` (or `on_error`) callback via a oneshot.
 macro_rules! sub_await {
-    ($fn:ident, $module:ident) => {
+    ($fn:ident, $module:ident, $label:literal) => {
         async fn $fn(
             conn: &bindings::$module::DbConnection,
             queries: Vec<String>,
         ) -> Result<(), GatherError> {
-            let label = stringify!($module);
+            let label = $label;
             let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
             // Either on_applied or on_error fires once; whichever wins sends.
             let tx = Arc::new(Mutex::new(Some(tx)));
@@ -149,9 +149,11 @@ macro_rules! sub_await {
     };
 }
 
-sub_await!(cards_sub, cards);
-sub_await!(regions_sub, regions);
-sub_await!(regionindex_sub, regionindex);
+// Both data upstreams run the unified `shard` module, so they use the `shard`
+// bindings; the "cards"/"regions" labels stay for accurate gather diagnostics.
+sub_await!(cards_sub, shard, "cards");
+sub_await!(regions_sub, shard, "regions");
+sub_await!(regionindex_sub, regionindex, "regionindex");
 
 /// Build the snapshot for `proposal`.
 pub async fn gather(pool: &Pool, proposal: &Proposal) -> Result<Snapshot, GatherError> {
@@ -282,13 +284,13 @@ async fn gather_region(
 /// latest version — a `TILE_CARD_TYPE` card placed loose (snapped) at the cell.
 /// `None` if no tile has been promoted there.
 fn latest_tile_card_at(
-    conn: &bindings::regions::DbConnection,
+    conn: &bindings::shard::DbConnection,
     macro_zone: u64,
     q: u8,
     r: u8,
-) -> Option<bindings::regions::Card> {
-    use bindings::regions::cards_table::CardsTableAccess;
-    let mut latest: HashMap<u32, bindings::regions::Card> = HashMap::new();
+) -> Option<bindings::shard::Card> {
+    use bindings::shard::cards_table::CardsTableAccess;
+    let mut latest: HashMap<u32, bindings::shard::Card> = HashMap::new();
     for c in conn.db().cards().iter() {
         if c.macro_zone != macro_zone {
             continue;
@@ -303,7 +305,7 @@ fn latest_tile_card_at(
     latest.into_values().find(|c| {
         let (card_type, _) = unpack_definition(c.packed_definition);
         card_type == TILE_CARD_TYPE
-            && !card_model::micro_is_card(c.flags_bk)
+            && !card_model::micro_is_card(c.flags)
             && micro_loose_cell(c.micro_location) == (q, r)
     })
 }
@@ -320,8 +322,8 @@ pub fn synthetic_tile(snap: &Snapshot, micro_location: u32) -> Option<(u16, (u8,
         return Some((
             card.packed_definition,
             (
-                card_model::tile_stock(card.flags_bk, 0),
-                card_model::tile_stock(card.flags_bk, 1),
+                card_model::stock(card.stock, 0),
+                card_model::stock(card.stock, 1),
             ),
         ));
     }
@@ -344,9 +346,9 @@ pub fn synthetic_tile(snap: &Snapshot, micro_location: u32) -> Option<(u16, (u8,
 
 // --- latest-version readers (collapse the cache's history to current) ---
 
-fn latest_cards(conn: &bindings::cards::DbConnection) -> Vec<bindings::cards::Card> {
-    use bindings::cards::cards_table::CardsTableAccess;
-    let mut latest: HashMap<u32, bindings::cards::Card> = HashMap::new();
+fn latest_cards(conn: &bindings::shard::DbConnection) -> Vec<bindings::shard::Card> {
+    use bindings::shard::cards_table::CardsTableAccess;
+    let mut latest: HashMap<u32, bindings::shard::Card> = HashMap::new();
     for c in conn.db().cards().iter() {
         let keep = latest
             .get(&c.card_id)
@@ -358,8 +360,8 @@ fn latest_cards(conn: &bindings::cards::DbConnection) -> Vec<bindings::cards::Ca
     latest.into_values().collect()
 }
 
-fn latest_zone(conn: &bindings::regions::DbConnection, macro_zone: u64) -> Option<bindings::regions::Zone> {
-    use bindings::regions::zones_table::ZonesTableAccess;
+fn latest_zone(conn: &bindings::shard::DbConnection, macro_zone: u64) -> Option<bindings::shard::Zone> {
+    use bindings::shard::zones_table::ZonesTableAccess;
     conn.db()
         .zones()
         .iter()
@@ -368,10 +370,10 @@ fn latest_zone(conn: &bindings::regions::DbConnection, macro_zone: u64) -> Optio
 }
 
 fn latest_region(
-    conn: &bindings::regions::DbConnection,
+    conn: &bindings::shard::DbConnection,
     macro_region: u64,
-) -> Option<bindings::regions::Region> {
-    use bindings::regions::regions_table::RegionsTableAccess;
+) -> Option<bindings::shard::Region> {
+    use bindings::shard::regions_table::RegionsTableAccess;
     conn.db()
         .regions()
         .iter()
@@ -379,9 +381,9 @@ fn latest_region(
         .max_by_key(|r| valid_at_time(r.valid_at))
 }
 
-fn latest_card_shards(conn: &bindings::regions::DbConnection) -> Vec<bindings::regions::CardShard> {
-    use bindings::regions::card_shards_table::CardShardsTableAccess;
-    let mut latest: HashMap<u16, bindings::regions::CardShard> = HashMap::new();
+fn latest_card_shards(conn: &bindings::shard::DbConnection) -> Vec<bindings::shard::CardShard> {
+    use bindings::shard::card_shards_table::CardShardsTableAccess;
+    let mut latest: HashMap<u16, bindings::shard::CardShard> = HashMap::new();
     for cs in conn.db().card_shards().iter() {
         let keep = latest
             .get(&cs.data_shard)

@@ -58,10 +58,10 @@ services:
       # `path = "content"` dep resolves it (mirrors how the spacetime
       # modules mount ../content into their crate dirs).
       - ../content:/workspace/content
-      # The shared VM rlib (resonantdust-data), mounted where Cargo.toml's
-      # `path = "wasm-data"` dep resolves it. Lives in the main repo at
-      # wasm/data; the gate links it directly (the client gets it as wasm).
-      - ../wasm/data:/workspace/wasm-data
+      # The shared workspace (codec/dsl/state/protocol + the resonantdust-data
+      # facade), mounted whole so the facade's sibling path-deps resolve.
+      # gateway/Cargo.toml depends on `path = "shared/data"`.
+      - ../shared:/workspace/shared
     working_dir: /workspace
     # spacetimedb-lib's build script shells out to `git rev-parse HEAD` to
     # stamp a commit hash, panicking when git is absent (it is, in rust:slim).

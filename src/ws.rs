@@ -27,7 +27,7 @@ use tracing::{debug, info, info_span, warn, Instrument};
 
 use crate::bindings;
 use crate::connections::Pool;
-use crate::protocol::{now_micros, ClientMsg, GateMsg};
+use resonantdust_data::protocol::{now_micros, ClientMsg, GateMsg, RowOp};
 
 /// How long a connection may be silent before the gate sends a standalone clock
 /// keepalive. Active clients sync via the `call_ok`/`call_err` piggyback, so this
@@ -42,8 +42,8 @@ static NEXT_CONN_ID: AtomicU64 = AtomicU64::new(1);
 /// per-client registry can hold them uniformly and tear them down on `unsub`
 /// (the four modules' generated `SubscriptionHandle` types are distinct).
 enum UpHandle {
-    Regions(bindings::regions::SubscriptionHandle),
-    Cards(bindings::cards::SubscriptionHandle),
+    Regions(bindings::shard::SubscriptionHandle),
+    Cards(bindings::shard::SubscriptionHandle),
     Chat(bindings::chat::SubscriptionHandle),
     Players(bindings::players::SubscriptionHandle),
 }
@@ -270,8 +270,8 @@ async fn await_ready<T>(
 
 async fn handle(
     pool: &Arc<Pool>,
-    upstream_regions: Option<&Arc<bindings::regions::DbConnection>>,
-    upstream_cards: Option<&Arc<bindings::cards::DbConnection>>,
+    upstream_regions: Option<&Arc<bindings::shard::DbConnection>>,
+    upstream_cards: Option<&Arc<bindings::shard::DbConnection>>,
     upstream_chat: Option<&Arc<bindings::chat::DbConnection>>,
     upstream_players: Option<&Arc<bindings::players::DbConnection>>,
     session: &tokio::sync::Mutex<Option<u32>>,
@@ -378,7 +378,7 @@ macro_rules! relay_table {
                 GateMsg::Row {
                     sid: 0,
                     table: $name.to_string(),
-                    op: "insert",
+                    op: RowOp::Insert,
                     old: None,
                     row: row_json(row),
                 }
@@ -391,7 +391,7 @@ macro_rules! relay_table {
                 GateMsg::Row {
                     sid: 0,
                     table: $name.to_string(),
-                    op: "update",
+                    op: RowOp::Update,
                     old: Some(row_json(old)),
                     row: row_json(new),
                 }
@@ -404,7 +404,7 @@ macro_rules! relay_table {
                 GateMsg::Row {
                     sid: 0,
                     table: $name.to_string(),
-                    op: "delete",
+                    op: RowOp::Delete,
                     old: None,
                     row: row_json(row),
                 }
@@ -504,8 +504,8 @@ macro_rules! route {
 /// `soul_privates` are still in the `shard` monolith. The client is oblivious —
 /// it subscribes by table name and the gate picks the backing connection.
 fn subscribe(
-    regions: Option<&Arc<bindings::regions::DbConnection>>,
-    cards: Option<&Arc<bindings::cards::DbConnection>>,
+    regions: Option<&Arc<bindings::shard::DbConnection>>,
+    cards: Option<&Arc<bindings::shard::DbConnection>>,
     chat: Option<&Arc<bindings::chat::DbConnection>>,
     players: Option<&Arc<bindings::players::DbConnection>>,
     registry: &mut SubRegistry,
@@ -524,15 +524,15 @@ fn subscribe(
     };
     match table {
         // region-owned tables → the per-client `regions` upstream
-        "zones" => route!(registry, regions, "regions", bindings::regions::zones_table::ZonesTableAccess, zones, "zones", tx, sid, query, UpHandle::Regions),
-        "regions" => route!(registry, regions, "regions", bindings::regions::regions_table::RegionsTableAccess, regions, "regions", tx, sid, query, UpHandle::Regions),
+        "zones" => route!(registry, regions, "regions", bindings::shard::zones_table::ZonesTableAccess, zones, "zones", tx, sid, query, UpHandle::Regions),
+        "regions" => route!(registry, regions, "regions", bindings::shard::regions_table::RegionsTableAccess, regions, "regions", tx, sid, query, UpHandle::Regions),
         // regions-DB tile-cards (the regions module's own `cards` table) → the
         // `regions` upstream, surfaced to the client as `tile_cards`.
-        "tile_cards" => route!(registry, regions, "regions", bindings::regions::cards_table::CardsTableAccess, cards, "tile_cards", tx, sid, query, UpHandle::Regions),
+        "tile_cards" => route!(registry, regions, "regions", bindings::shard::cards_table::CardsTableAccess, cards, "tile_cards", tx, sid, query, UpHandle::Regions),
         // card-owned tables → the per-client `cards` upstream
-        "cards" => route!(registry, cards, "cards", bindings::cards::cards_table::CardsTableAccess, cards, "cards", tx, sid, query, UpHandle::Cards),
-        "souls" => route!(registry, cards, "cards", bindings::cards::souls_table::SoulsTableAccess, souls, "souls", tx, sid, query, UpHandle::Cards),
-        "soul_privates" => route!(registry, cards, "cards", bindings::cards::soul_privates_table::SoulPrivatesTableAccess, soul_privates, "soul_privates", tx, sid, query, UpHandle::Cards),
+        "cards" => route!(registry, cards, "cards", bindings::shard::cards_table::CardsTableAccess, cards, "cards", tx, sid, query, UpHandle::Cards),
+        "souls" => route!(registry, cards, "cards", bindings::shard::souls_table::SoulsTableAccess, souls, "souls", tx, sid, query, UpHandle::Cards),
+        "soul_privates" => route!(registry, cards, "cards", bindings::shard::soul_privates_table::SoulPrivatesTableAccess, soul_privates, "soul_privates", tx, sid, query, UpHandle::Cards),
         // chat-owned tables → the per-client `chat` upstream
         "chat_messages" => route!(registry, chat, "chat", bindings::chat::chat_messages_table::ChatMessagesTableAccess, chat_messages, "chat_messages", tx, sid, query, UpHandle::Chat),
         // players auth-DB tables → the per-client `players` upstream

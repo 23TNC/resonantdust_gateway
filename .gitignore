@@ -68,3 +68,7 @@ Thumbs.db
 
 # npm
 pixijs/node_modules/*
+
+# Bind-mount target for the shared workspace (compose mounts the main repo's
+# `shared/` here at build time). Docker-managed mount point, never source.
+/shared/

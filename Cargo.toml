@@ -26,6 +26,6 @@ reqwest = { version = "0.12", default-features = false, features = ["json"] }
 # produced src/bindings/ (spacetime cli 2.3.0).
 spacetimedb-sdk = "2.3"
 # Shared DSL VM rlib (the rewrite's recipe engine). Bind-mounted at
-# /workspace/wasm-data by the compose `build` service (it lives in the main repo
-# at wasm/data). The gate links it directly; the client gets it built to wasm.
-resonantdust-data = { path = "wasm-data" }
+# /workspace/shared-data by the compose `build` service (it lives in the main repo
+# at shared/data). The gate links it directly; the client gets it built to wasm.
+resonantdust-data = { path = "shared/data", features = ["protocol"] }

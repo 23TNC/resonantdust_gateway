@@ -15,45 +15,69 @@ pub mod card_type;
 pub mod card_id_counter_type;
 pub mod card_shard_type;
 pub mod gc_schedule_type;
+pub mod pending_action_type;
+pub mod placement_type;
 pub mod region_type;
 pub mod sequence_counter_type;
+pub mod shard_identity_type;
+pub mod soul_type;
+pub mod soul_private_type;
+pub mod tile_point_type;
 pub mod zone_type;
 pub mod acquire_card_shard_reducer;
-pub mod acquire_tile_hold_reducer;
-pub mod acquire_tile_lease_reducer;
+pub mod add_card_reducer;
+pub mod apply_action_reducer;
+pub mod apply_action_tile_reducer;
+pub mod claim_pending_reducer;
 pub mod ensure_region_reducer;
-pub mod promote_tile_reducer;
+pub mod move_soul_reducer;
+pub mod place_card_reducer;
 pub mod release_card_shard_reducer;
-pub mod release_tile_hold_reducer;
+pub mod release_pending_reducer;
+pub mod request_blueprint_reducer;
 pub mod request_zone_reducer;
-pub mod set_tile_reducer;
-pub mod set_tile_stock_reducer;
+pub mod set_shard_identity_reducer;
+pub mod spawn_soul_reducer;
 pub mod card_shards_table;
 pub mod cards_table;
 pub mod regions_table;
+pub mod soul_privates_table;
+pub mod souls_table;
 pub mod zones_table;
 
 pub use card_type::Card;
 pub use card_id_counter_type::CardIdCounter;
 pub use card_shard_type::CardShard;
 pub use gc_schedule_type::GcSchedule;
+pub use pending_action_type::PendingAction;
+pub use placement_type::Placement;
 pub use region_type::Region;
 pub use sequence_counter_type::SequenceCounter;
+pub use shard_identity_type::ShardIdentity;
+pub use soul_type::Soul;
+pub use soul_private_type::SoulPrivate;
+pub use tile_point_type::TilePoint;
 pub use zone_type::Zone;
 pub use card_shards_table::*;
 pub use cards_table::*;
 pub use regions_table::*;
+pub use soul_privates_table::*;
+pub use souls_table::*;
 pub use zones_table::*;
 pub use acquire_card_shard_reducer::acquire_card_shard;
-pub use acquire_tile_hold_reducer::acquire_tile_hold;
-pub use acquire_tile_lease_reducer::acquire_tile_lease;
+pub use add_card_reducer::add_card;
+pub use apply_action_reducer::apply_action;
+pub use apply_action_tile_reducer::apply_action_tile;
+pub use claim_pending_reducer::claim_pending;
 pub use ensure_region_reducer::ensure_region;
-pub use promote_tile_reducer::promote_tile;
+pub use move_soul_reducer::move_soul;
+pub use place_card_reducer::place_card;
 pub use release_card_shard_reducer::release_card_shard;
-pub use release_tile_hold_reducer::release_tile_hold;
+pub use release_pending_reducer::release_pending;
+pub use request_blueprint_reducer::request_blueprint;
 pub use request_zone_reducer::request_zone;
-pub use set_tile_reducer::set_tile;
-pub use set_tile_stock_reducer::set_tile_stock;
+pub use set_shard_identity_reducer::set_shard_identity;
+pub use spawn_soul_reducer::spawn_soul;
 
 #[derive(Clone, PartialEq, Debug)]
 
@@ -67,69 +91,98 @@ pub enum Reducer {
         time_ms: u64,
         data_shard: u16,
 }    ,
-    AcquireTileHold {
-        time_ms: u64,
-        surface: u8,
-        macro_zone: u64,
-        q: u8,
-        r: u8,
-        kind: u8,
+    AddCard {
+        client_time_ms: u64,
+        soul_card_id: u32,
+        packed_definition: u16,
 }    ,
-    AcquireTileLease {
+    ApplyAction {
+        now_ms: u64,
+        completion_ms: u64,
+        bound_ids: Vec::<u32>,
+        bound_masks: Vec::<u8>,
+        destroy_ids: Vec::<u32>,
+        create_defs: Vec::<u16>,
+        create_surfaces: Vec::<u8>,
+        create_macro_zones: Vec::<u64>,
+        create_owners: Vec::<u32>,
+        unlock_targets: Vec::<u32>,
+        unlock_blueprints: Vec::<u16>,
+        stat_souls: Vec::<u32>,
+        stat_fields: Vec::<u8>,
+        stat_bytes: Vec::<u8>,
+        stat_deltas: Vec::<i8>,
+}    ,
+    ApplyActionTile {
+        now_ms: u64,
+        completion_ms: u64,
         surface: u8,
         macro_zone: u64,
         q: u8,
         r: u8,
-        kind: u8,
-        acquire_ms: u64,
-        release_ms: u64,
+        hold_mask: u8,
+        stock_slots: Vec::<u8>,
+        stock_ops: Vec::<u8>,
+        stock_deltas: Vec::<u8>,
+}    ,
+    ClaimPending {
+        recipe_id: u16,
+        root: u32,
+        bindings: Vec::<Vec::<u32>>,
+        completion_ms: u64,
 }    ,
     EnsureRegion {
         client_time_ms: u64,
         macro_zone: u64,
 }    ,
-    PromoteTile {
-        time_ms: u64,
-        surface: u8,
-        macro_zone: u64,
-        q: u8,
-        r: u8,
+    MoveSoul {
+        client_time_ms: u64,
+        caller_player_id: u32,
+        soul_id: u32,
+        path: Vec::<TilePoint>,
+}    ,
+    PlaceCard {
+        client_time_ms: u64,
+        caller_player_id: u32,
+        card_id: u32,
+        placement: Placement,
 }    ,
     ReleaseCardShard {
         time_ms: u64,
         data_shard: u16,
 }    ,
-    ReleaseTileHold {
-        time_ms: u64,
+    ReleasePending {
+        recipe_id: u16,
+        root: u32,
+        bindings: Vec::<Vec::<u32>>,
+}    ,
+    RequestBlueprint {
+        client_time_ms: u64,
+        caller_player_id: u32,
+        soul_card_id: u32,
+        blueprint_id: u16,
         surface: u8,
         macro_zone: u64,
-        q: u8,
-        r: u8,
-        kind: u8,
+        micro_location: u32,
+        max_active: i32,
+        blueprint_packed_def: u16,
 }    ,
     RequestZone {
         client_time_ms: u64,
         macro_zone: u64,
         tiles: Vec::<u64>,
 }    ,
-    SetTile {
-        zone_id: u32,
-        time_ms: u64,
-        row: u8,
-        col: u8,
-        def_id: u16,
-        stock_0: u8,
-        stock_1: u8,
+    SetShardIdentity {
+        card_db: u8,
+        shard: u16,
 }    ,
-    SetTileStock {
-        time_ms: u64,
-        surface: u8,
-        macro_zone: u64,
-        q: u8,
-        r: u8,
-        slot: u8,
-        op: u8,
-        delta: u8,
+    SpawnSoul {
+        client_time_ms: u64,
+        player_id: u32,
+        soul_index: u32,
+        soul_packed: u16,
+        human_packed: u16,
+        loadout_packed: Vec::<u16>,
 }    ,
 }
 
@@ -142,15 +195,19 @@ impl __sdk::Reducer for Reducer {
     fn reducer_name(&self) -> &'static str {
         match self {
                         Reducer::AcquireCardShard { .. } => "acquire_card_shard",
-            Reducer::AcquireTileHold { .. } => "acquire_tile_hold",
-            Reducer::AcquireTileLease { .. } => "acquire_tile_lease",
+            Reducer::AddCard { .. } => "add_card",
+            Reducer::ApplyAction { .. } => "apply_action",
+            Reducer::ApplyActionTile { .. } => "apply_action_tile",
+            Reducer::ClaimPending { .. } => "claim_pending",
             Reducer::EnsureRegion { .. } => "ensure_region",
-            Reducer::PromoteTile { .. } => "promote_tile",
+            Reducer::MoveSoul { .. } => "move_soul",
+            Reducer::PlaceCard { .. } => "place_card",
             Reducer::ReleaseCardShard { .. } => "release_card_shard",
-            Reducer::ReleaseTileHold { .. } => "release_tile_hold",
+            Reducer::ReleasePending { .. } => "release_pending",
+            Reducer::RequestBlueprint { .. } => "request_blueprint",
             Reducer::RequestZone { .. } => "request_zone",
-            Reducer::SetTile { .. } => "set_tile",
-            Reducer::SetTileStock { .. } => "set_tile_stock",
+            Reducer::SetShardIdentity { .. } => "set_shard_identity",
+            Reducer::SpawnSoul { .. } => "spawn_soul",
             _ => unreachable!(),
 }
 }
@@ -164,37 +221,81 @@ fn args_bsatn(&self) -> Result<Vec<u8>, __sats::bsatn::EncodeError> {
                 time_ms: time_ms.clone(),
                 data_shard: data_shard.clone(),
 }),
-            Reducer::AcquireTileHold{
-                time_ms,
-                surface,
-                macro_zone,
-                q,
-                r,
-                kind,
-}             => __sats::bsatn::to_vec(&acquire_tile_hold_reducer::AcquireTileHoldArgs {
-                time_ms: time_ms.clone(),
-                surface: surface.clone(),
-                macro_zone: macro_zone.clone(),
-                q: q.clone(),
-                r: r.clone(),
-                kind: kind.clone(),
+            Reducer::AddCard{
+                client_time_ms,
+                soul_card_id,
+                packed_definition,
+}             => __sats::bsatn::to_vec(&add_card_reducer::AddCardArgs {
+                client_time_ms: client_time_ms.clone(),
+                soul_card_id: soul_card_id.clone(),
+                packed_definition: packed_definition.clone(),
 }),
-            Reducer::AcquireTileLease{
+            Reducer::ApplyAction{
+                now_ms,
+                completion_ms,
+                bound_ids,
+                bound_masks,
+                destroy_ids,
+                create_defs,
+                create_surfaces,
+                create_macro_zones,
+                create_owners,
+                unlock_targets,
+                unlock_blueprints,
+                stat_souls,
+                stat_fields,
+                stat_bytes,
+                stat_deltas,
+}             => __sats::bsatn::to_vec(&apply_action_reducer::ApplyActionArgs {
+                now_ms: now_ms.clone(),
+                completion_ms: completion_ms.clone(),
+                bound_ids: bound_ids.clone(),
+                bound_masks: bound_masks.clone(),
+                destroy_ids: destroy_ids.clone(),
+                create_defs: create_defs.clone(),
+                create_surfaces: create_surfaces.clone(),
+                create_macro_zones: create_macro_zones.clone(),
+                create_owners: create_owners.clone(),
+                unlock_targets: unlock_targets.clone(),
+                unlock_blueprints: unlock_blueprints.clone(),
+                stat_souls: stat_souls.clone(),
+                stat_fields: stat_fields.clone(),
+                stat_bytes: stat_bytes.clone(),
+                stat_deltas: stat_deltas.clone(),
+}),
+            Reducer::ApplyActionTile{
+                now_ms,
+                completion_ms,
                 surface,
                 macro_zone,
                 q,
                 r,
-                kind,
-                acquire_ms,
-                release_ms,
-}             => __sats::bsatn::to_vec(&acquire_tile_lease_reducer::AcquireTileLeaseArgs {
+                hold_mask,
+                stock_slots,
+                stock_ops,
+                stock_deltas,
+}             => __sats::bsatn::to_vec(&apply_action_tile_reducer::ApplyActionTileArgs {
+                now_ms: now_ms.clone(),
+                completion_ms: completion_ms.clone(),
                 surface: surface.clone(),
                 macro_zone: macro_zone.clone(),
                 q: q.clone(),
                 r: r.clone(),
-                kind: kind.clone(),
-                acquire_ms: acquire_ms.clone(),
-                release_ms: release_ms.clone(),
+                hold_mask: hold_mask.clone(),
+                stock_slots: stock_slots.clone(),
+                stock_ops: stock_ops.clone(),
+                stock_deltas: stock_deltas.clone(),
+}),
+            Reducer::ClaimPending{
+                recipe_id,
+                root,
+                bindings,
+                completion_ms,
+}             => __sats::bsatn::to_vec(&claim_pending_reducer::ClaimPendingArgs {
+                recipe_id: recipe_id.clone(),
+                root: root.clone(),
+                bindings: bindings.clone(),
+                completion_ms: completion_ms.clone(),
 }),
             Reducer::EnsureRegion{
                 client_time_ms,
@@ -203,18 +304,27 @@ fn args_bsatn(&self) -> Result<Vec<u8>, __sats::bsatn::EncodeError> {
                 client_time_ms: client_time_ms.clone(),
                 macro_zone: macro_zone.clone(),
 }),
-            Reducer::PromoteTile{
-                time_ms,
-                surface,
-                macro_zone,
-                q,
-                r,
-}             => __sats::bsatn::to_vec(&promote_tile_reducer::PromoteTileArgs {
-                time_ms: time_ms.clone(),
-                surface: surface.clone(),
-                macro_zone: macro_zone.clone(),
-                q: q.clone(),
-                r: r.clone(),
+            Reducer::MoveSoul{
+                client_time_ms,
+                caller_player_id,
+                soul_id,
+                path,
+}             => __sats::bsatn::to_vec(&move_soul_reducer::MoveSoulArgs {
+                client_time_ms: client_time_ms.clone(),
+                caller_player_id: caller_player_id.clone(),
+                soul_id: soul_id.clone(),
+                path: path.clone(),
+}),
+            Reducer::PlaceCard{
+                client_time_ms,
+                caller_player_id,
+                card_id,
+                placement,
+}             => __sats::bsatn::to_vec(&place_card_reducer::PlaceCardArgs {
+                client_time_ms: client_time_ms.clone(),
+                caller_player_id: caller_player_id.clone(),
+                card_id: card_id.clone(),
+                placement: placement.clone(),
 }),
             Reducer::ReleaseCardShard{
                 time_ms,
@@ -223,20 +333,35 @@ fn args_bsatn(&self) -> Result<Vec<u8>, __sats::bsatn::EncodeError> {
                 time_ms: time_ms.clone(),
                 data_shard: data_shard.clone(),
 }),
-            Reducer::ReleaseTileHold{
-                time_ms,
+            Reducer::ReleasePending{
+                recipe_id,
+                root,
+                bindings,
+}             => __sats::bsatn::to_vec(&release_pending_reducer::ReleasePendingArgs {
+                recipe_id: recipe_id.clone(),
+                root: root.clone(),
+                bindings: bindings.clone(),
+}),
+            Reducer::RequestBlueprint{
+                client_time_ms,
+                caller_player_id,
+                soul_card_id,
+                blueprint_id,
                 surface,
                 macro_zone,
-                q,
-                r,
-                kind,
-}             => __sats::bsatn::to_vec(&release_tile_hold_reducer::ReleaseTileHoldArgs {
-                time_ms: time_ms.clone(),
+                micro_location,
+                max_active,
+                blueprint_packed_def,
+}             => __sats::bsatn::to_vec(&request_blueprint_reducer::RequestBlueprintArgs {
+                client_time_ms: client_time_ms.clone(),
+                caller_player_id: caller_player_id.clone(),
+                soul_card_id: soul_card_id.clone(),
+                blueprint_id: blueprint_id.clone(),
                 surface: surface.clone(),
                 macro_zone: macro_zone.clone(),
-                q: q.clone(),
-                r: r.clone(),
-                kind: kind.clone(),
+                micro_location: micro_location.clone(),
+                max_active: max_active.clone(),
+                blueprint_packed_def: blueprint_packed_def.clone(),
 }),
             Reducer::RequestZone{
                 client_time_ms,
@@ -247,41 +372,27 @@ fn args_bsatn(&self) -> Result<Vec<u8>, __sats::bsatn::EncodeError> {
                 macro_zone: macro_zone.clone(),
                 tiles: tiles.clone(),
 }),
-            Reducer::SetTile{
-                zone_id,
-                time_ms,
-                row,
-                col,
-                def_id,
-                stock_0,
-                stock_1,
-}             => __sats::bsatn::to_vec(&set_tile_reducer::SetTileArgs {
-                zone_id: zone_id.clone(),
-                time_ms: time_ms.clone(),
-                row: row.clone(),
-                col: col.clone(),
-                def_id: def_id.clone(),
-                stock_0: stock_0.clone(),
-                stock_1: stock_1.clone(),
+            Reducer::SetShardIdentity{
+                card_db,
+                shard,
+}             => __sats::bsatn::to_vec(&set_shard_identity_reducer::SetShardIdentityArgs {
+                card_db: card_db.clone(),
+                shard: shard.clone(),
 }),
-            Reducer::SetTileStock{
-                time_ms,
-                surface,
-                macro_zone,
-                q,
-                r,
-                slot,
-                op,
-                delta,
-}             => __sats::bsatn::to_vec(&set_tile_stock_reducer::SetTileStockArgs {
-                time_ms: time_ms.clone(),
-                surface: surface.clone(),
-                macro_zone: macro_zone.clone(),
-                q: q.clone(),
-                r: r.clone(),
-                slot: slot.clone(),
-                op: op.clone(),
-                delta: delta.clone(),
+            Reducer::SpawnSoul{
+                client_time_ms,
+                player_id,
+                soul_index,
+                soul_packed,
+                human_packed,
+                loadout_packed,
+}             => __sats::bsatn::to_vec(&spawn_soul_reducer::SpawnSoulArgs {
+                client_time_ms: client_time_ms.clone(),
+                player_id: player_id.clone(),
+                soul_index: soul_index.clone(),
+                soul_packed: soul_packed.clone(),
+                human_packed: human_packed.clone(),
+                loadout_packed: loadout_packed.clone(),
 }),
             _ => unreachable!(),
 }
@@ -295,6 +406,8 @@ pub struct DbUpdate {
         card_shards: __sdk::TableUpdate<CardShard>,
     cards: __sdk::TableUpdate<Card>,
     regions: __sdk::TableUpdate<Region>,
+    soul_privates: __sdk::TableUpdate<SoulPrivate>,
+    souls: __sdk::TableUpdate<Soul>,
     zones: __sdk::TableUpdate<Zone>,
 }
 
@@ -309,6 +422,8 @@ impl TryFrom<__ws::v2::TransactionUpdate> for DbUpdate {
         "card_shards" => db_update.card_shards.append(card_shards_table::parse_table_update(table_update)?),
     "cards" => db_update.cards.append(cards_table::parse_table_update(table_update)?),
     "regions" => db_update.regions.append(regions_table::parse_table_update(table_update)?),
+    "soul_privates" => db_update.soul_privates.append(soul_privates_table::parse_table_update(table_update)?),
+    "souls" => db_update.souls.append(souls_table::parse_table_update(table_update)?),
     "zones" => db_update.zones.append(zones_table::parse_table_update(table_update)?),
 
                 unknown => {
@@ -335,6 +450,8 @@ impl __sdk::DbUpdate for DbUpdate {
                 diff.card_shards = cache.apply_diff_to_table::<CardShard>("card_shards", &self.card_shards).with_updates_by_pk(|row| &row.valid_at);
         diff.cards = cache.apply_diff_to_table::<Card>("cards", &self.cards).with_updates_by_pk(|row| &row.valid_at);
         diff.regions = cache.apply_diff_to_table::<Region>("regions", &self.regions).with_updates_by_pk(|row| &row.valid_at);
+        diff.soul_privates = cache.apply_diff_to_table::<SoulPrivate>("soul_privates", &self.soul_privates).with_updates_by_pk(|row| &row.card_id);
+        diff.souls = cache.apply_diff_to_table::<Soul>("souls", &self.souls).with_updates_by_pk(|row| &row.valid_at);
         diff.zones = cache.apply_diff_to_table::<Zone>("zones", &self.zones).with_updates_by_pk(|row| &row.valid_at);
 
                     diff
@@ -346,6 +463,8 @@ for table_rows in raw.tables {
                                 "card_shards" => db_update.card_shards.append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
                 "cards" => db_update.cards.append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
                 "regions" => db_update.regions.append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
+                "soul_privates" => db_update.soul_privates.append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
+                "souls" => db_update.souls.append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
                 "zones" => db_update.zones.append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
                 unknown => { return Err(__sdk::InternalError::unknown_name("table", unknown, "QueryRows").into()); }
 }}        Ok(db_update)
@@ -357,6 +476,8 @@ for table_rows in raw.tables {
                                 "card_shards" => db_update.card_shards.append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
                 "cards" => db_update.cards.append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
                 "regions" => db_update.regions.append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
+                "soul_privates" => db_update.soul_privates.append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
+                "souls" => db_update.souls.append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
                 "zones" => db_update.zones.append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
                 unknown => { return Err(__sdk::InternalError::unknown_name("table", unknown, "QueryRows").into()); }
 }}        Ok(db_update)
@@ -370,6 +491,8 @@ pub struct AppliedDiff<'r> {
         card_shards: __sdk::TableAppliedDiff<'r, CardShard>,
     cards: __sdk::TableAppliedDiff<'r, Card>,
     regions: __sdk::TableAppliedDiff<'r, Region>,
+    soul_privates: __sdk::TableAppliedDiff<'r, SoulPrivate>,
+    souls: __sdk::TableAppliedDiff<'r, Soul>,
     zones: __sdk::TableAppliedDiff<'r, Zone>,
     __unused: std::marker::PhantomData<&'r ()>,
 }
@@ -384,6 +507,8 @@ impl<'r> __sdk::AppliedDiff<'r> for AppliedDiff<'r> {
                 callbacks.invoke_table_row_callbacks::<CardShard>("card_shards", &self.card_shards, event);
         callbacks.invoke_table_row_callbacks::<Card>("cards", &self.cards, event);
         callbacks.invoke_table_row_callbacks::<Region>("regions", &self.regions, event);
+        callbacks.invoke_table_row_callbacks::<SoulPrivate>("soul_privates", &self.soul_privates, event);
+        callbacks.invoke_table_row_callbacks::<Soul>("souls", &self.souls, event);
         callbacks.invoke_table_row_callbacks::<Zone>("zones", &self.zones, event);
 }
 }
@@ -1039,12 +1164,16 @@ fn register_tables(client_cache: &mut __sdk::ClientCache<Self>) {
                 card_shards_table::register_table(client_cache);
         cards_table::register_table(client_cache);
         regions_table::register_table(client_cache);
+        soul_privates_table::register_table(client_cache);
+        souls_table::register_table(client_cache);
         zones_table::register_table(client_cache);
 }
 const ALL_TABLE_NAMES: &'static [&'static str] = &[
                 "card_shards",
         "cards",
         "regions",
+        "soul_privates",
+        "souls",
         "zones",
 ];
 }

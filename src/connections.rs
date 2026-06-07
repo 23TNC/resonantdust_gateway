@@ -69,8 +69,10 @@ macro_rules! connector {
     };
 }
 
-connector!(connect_cards, cards);
-connector!(connect_regions, regions);
+// The unified `shard` data module backs both the cards DB and the region DBs,
+// so both upstreams use the same `shard` bindings (one schema, two DB names).
+connector!(connect_cards, shard);
+connector!(connect_regions, shard);
 connector!(connect_regionindex, regionindex);
 
 /// Lazy pool of upstream connections, keyed by shard id where applicable.
@@ -84,8 +86,8 @@ pub struct Pool {
     /// version live. Readers take a cheap `Arc` snapshot ([`Pool::content`]) and
     /// run a whole action against one consistent version even if a swap races.
     content: RwLock<Arc<crate::content::LoadedContent>>,
-    cards: Mutex<HashMap<u16, Arc<bindings::cards::DbConnection>>>,
-    regions: Mutex<HashMap<u16, Arc<bindings::regions::DbConnection>>>,
+    cards: Mutex<HashMap<u16, Arc<bindings::shard::DbConnection>>>,
+    regions: Mutex<HashMap<u16, Arc<bindings::shard::DbConnection>>>,
     regions_index: Mutex<Option<Arc<bindings::regionindex::DbConnection>>>,
     /// Live client WS senders, for gate-initiated broadcasts (e.g. the
     /// `content_changed` push after `add_content`). Dead senders are pruned
@@ -190,7 +192,7 @@ impl Pool {
     }
 
     /// Connection to the `cards` shard `shard`, establishing it on first use.
-    pub fn cards(&self, shard: u16) -> Option<Arc<bindings::cards::DbConnection>> {
+    pub fn cards(&self, shard: u16) -> Option<Arc<bindings::shard::DbConnection>> {
         let mut map = self.cards.lock().unwrap();
         if let Some(conn) = map.get(&shard) {
             return Some(conn.clone());
@@ -201,7 +203,7 @@ impl Pool {
     }
 
     /// Connection to the `regions` shard `shard`, establishing it on first use.
-    pub fn regions(&self, shard: u16) -> Option<Arc<bindings::regions::DbConnection>> {
+    pub fn regions(&self, shard: u16) -> Option<Arc<bindings::shard::DbConnection>> {
         let mut map = self.regions.lock().unwrap();
         if let Some(conn) = map.get(&shard) {
             return Some(conn.clone());
@@ -239,10 +241,10 @@ impl Pool {
     pub fn fresh_regions(
         &self,
     ) -> Option<(
-        Arc<bindings::regions::DbConnection>,
+        Arc<bindings::shard::DbConnection>,
         tokio::sync::oneshot::Receiver<()>,
     )> {
-        use bindings::regions::DbConnection;
+        use bindings::shard::DbConnection;
         let db_name = self.cfg.regions_db(0);
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
         let ready_tx = Arc::new(Mutex::new(Some(ready_tx)));
@@ -397,10 +399,10 @@ impl Pool {
     pub fn fresh_cards(
         &self,
     ) -> Option<(
-        Arc<bindings::cards::DbConnection>,
+        Arc<bindings::shard::DbConnection>,
         tokio::sync::oneshot::Receiver<()>,
     )> {
-        use bindings::cards::DbConnection;
+        use bindings::shard::DbConnection;
         let db_name = self.cfg.cards_db(0);
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
         let ready_tx = Arc::new(Mutex::new(Some(ready_tx)));

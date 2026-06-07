@@ -19,8 +19,7 @@ impl CardStore for Snapshot {
             micro_location: c.micro_location,
             macro_zone: c.macro_zone,
             packed_definition: c.packed_definition,
-            flags_state: c.flags_state,
-            flags_bk: c.flags_bk,
+            flags: c.flags,
         })
     }
 }

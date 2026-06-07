@@ -12,63 +12,51 @@ use spacetimedb_sdk::__codegen::{
 
 #[derive(__lib::ser::Serialize, __lib::de::Deserialize, Clone, PartialEq, Debug)]
 #[sats(crate = __lib)]
-pub(super) struct SetSoulStatArgs {
-    pub soul_card_id: u32,
-    pub field: u8,
-    pub byte_index: u8,
-    pub delta: i8,
-    pub time_ms: u64,
+pub(super) struct SetShardIdentityArgs {
+    pub card_db: u8,
+    pub shard: u16,
 }
 
-impl From<SetSoulStatArgs> for super::Reducer {
-    fn from(args: SetSoulStatArgs) -> Self {
-        Self::SetSoulStat {
-            soul_card_id: args.soul_card_id,
-            field: args.field,
-            byte_index: args.byte_index,
-            delta: args.delta,
-            time_ms: args.time_ms,
+impl From<SetShardIdentityArgs> for super::Reducer {
+    fn from(args: SetShardIdentityArgs) -> Self {
+        Self::SetShardIdentity {
+            card_db: args.card_db,
+            shard: args.shard,
 }
 }
 }
 
-impl __sdk::InModule for SetSoulStatArgs {
+impl __sdk::InModule for SetShardIdentityArgs {
     type Module = super::RemoteModule;
 }
 
 #[allow(non_camel_case_types)]
-/// Extension trait for access to the reducer `set_soul_stat`.
+/// Extension trait for access to the reducer `set_shard_identity`.
 ///
 /// Implemented for [`super::RemoteReducers`].
-pub trait set_soul_stat {
-    /// Request that the remote module invoke the reducer `set_soul_stat` to run as soon as possible.
+pub trait set_shard_identity {
+    /// Request that the remote module invoke the reducer `set_shard_identity` to run as soon as possible.
     ///
     /// This method returns immediately, and errors only if we are unable to send the request.
     /// The reducer will run asynchronously in the future,
     ///  and this method provides no way to listen for its completion status.
-    /// /// Use [`set_soul_stat:set_soul_stat_then`] to run a callback after the reducer completes.
-    fn set_soul_stat(&self, soul_card_id: u32,
-field: u8,
-byte_index: u8,
-delta: i8,
-time_ms: u64,
+    /// /// Use [`set_shard_identity:set_shard_identity_then`] to run a callback after the reducer completes.
+    fn set_shard_identity(&self, card_db: u8,
+shard: u16,
 ) -> __sdk::Result<()> {
-        self.set_soul_stat_then(soul_card_id, field, byte_index, delta, time_ms,  |_, _| {})
+        self.set_shard_identity_then(card_db, shard,  |_, _| {})
     }
 
-    /// Request that the remote module invoke the reducer `set_soul_stat` to run as soon as possible,
+    /// Request that the remote module invoke the reducer `set_shard_identity` to run as soon as possible,
     /// registering `callback` to run when we are notified that the reducer completed.
     ///
     /// This method returns immediately, and errors only if we are unable to send the request.
     /// The reducer will run asynchronously in the future,
     ///  and its status can be observed with the `callback`.
-    fn set_soul_stat_then(
+    fn set_shard_identity_then(
         &self,
-        soul_card_id: u32,
-field: u8,
-byte_index: u8,
-delta: i8,
-time_ms: u64,
+        card_db: u8,
+shard: u16,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
@@ -76,20 +64,17 @@ time_ms: u64,
     ) -> __sdk::Result<()>;
 }
 
-impl set_soul_stat for super::RemoteReducers {
-    fn set_soul_stat_then(
+impl set_shard_identity for super::RemoteReducers {
+    fn set_shard_identity_then(
         &self,
-        soul_card_id: u32,
-field: u8,
-byte_index: u8,
-delta: i8,
-time_ms: u64,
+        card_db: u8,
+shard: u16,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
             + 'static,
     ) -> __sdk::Result<()> {
-        self.imp.invoke_reducer_with_callback(SetSoulStatArgs { soul_card_id, field, byte_index, delta, time_ms,  }, callback)
+        self.imp.invoke_reducer_with_callback(SetShardIdentityArgs { card_db, shard,  }, callback)
     }
 }
 
