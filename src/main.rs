@@ -9,7 +9,6 @@ mod bindings;
 mod config;
 mod connections;
 mod content;
-mod dsl_recipe;
 mod gather;
 mod propose;
 mod routing;

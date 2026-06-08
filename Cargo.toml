@@ -29,3 +29,6 @@ spacetimedb-sdk = "2.3"
 # /workspace/shared-data by the compose `build` service (it lives in the main repo
 # at shared/data). The gate links it directly; the client gets it built to wasm.
 resonantdust-data = { path = "shared/data", features = ["protocol"] }
+# Recipe glue (run a recipe → ActionPlan over a CardStore) — moved out of the
+# gate into shared so the client reuses it. The gate's Snapshot impls CardStore.
+resonantdust-rules = { path = "shared/rules" }

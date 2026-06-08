@@ -10,9 +10,13 @@ use resonantdust_data::packed::{
 };
 use resonantdust_data::loader::Bundle;
 
-/// Canonical world seed — chosen so the spawn origin sits in the forest biome
-/// (see `resonantdust_data::noise::tests::origin_lands_in_forest_envelope`).
-const WORLD_SEED: u64 = 0x27;
+/// Canonical world seed — chosen so the spawn zone, macro_zone (3,3) (world
+/// tiles 24..31, where the harness seeds souls), is entirely forest. Found by
+/// `resonantdust-data --bin seedsearch`; full forest at (3,3) with a healthy
+/// world mix (≈58% plains / 24% forest / 16% mountain / 2% desert). The noise
+/// parity lock (`noise::tests`) pins a SEPARATE fixed reference seed (0x27) for
+/// the bit-for-bit Rust↔TS check — it is intentionally not this value.
+const WORLD_SEED: u64 = 1;
 
 /// The 16 packed tile-u64s the `request_zone` reducer should store for
 /// `macro_zone`. World surface → DSL-generated terrain (per-cell biome select +

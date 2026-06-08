@@ -27,7 +27,7 @@ use resonantdust_data::packed::{
 
 /// `card_type` of a promoted tile-card. Mirrors `regions::cards::TILE_CARD_TYPE`.
 const TILE_CARD_TYPE: u8 = 7;
-use spacetimedb_sdk::{DbContext, Table};
+use spacetimedb_sdk::{DbContext, SubscriptionHandle as _, Table};
 use tracing::debug;
 
 use crate::bindings;
@@ -119,14 +119,18 @@ macro_rules! sub_await {
         async fn $fn(
             conn: &bindings::$module::DbConnection,
             queries: Vec<String>,
-        ) -> Result<(), GatherError> {
+        ) -> Result<bindings::$module::SubscriptionHandle, GatherError> {
             let label = $label;
             let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
             // Either on_applied or on_error fires once; whichever wins sends.
             let tx = Arc::new(Mutex::new(Some(tx)));
             let tx_ok = tx.clone();
             let tx_err = tx.clone();
-            conn.subscription_builder()
+            // Keep the handle: the upstream connection is pool-shared, so a
+            // discarded subscription is never torn down and they pile up until the
+            // connection stalls. The caller unsubscribes once it has read the rows.
+            let handle = conn
+                .subscription_builder()
                 .on_applied(move |_ctx| {
                     if let Some(t) = tx_ok.lock().unwrap().take() {
                         let _ = t.send(Ok(()));
@@ -140,10 +144,17 @@ macro_rules! sub_await {
                 .subscribe(queries);
 
             match tokio::time::timeout(SUB_TIMEOUT, rx).await {
-                Err(_) => Err(GatherError::Timeout(label.to_string())),
-                Ok(Err(_)) => Err(GatherError::Dropped(label.to_string())),
-                Ok(Ok(Err(msg))) => Err(GatherError::Subscription(msg)),
-                Ok(Ok(Ok(()))) => Ok(()),
+                Ok(Ok(Ok(()))) => Ok(handle),
+                other => {
+                    // Failed to apply — drop the subscription so it can't leak.
+                    let _ = handle.unsubscribe();
+                    Err(match other {
+                        Err(_) => GatherError::Timeout(label.to_string()),
+                        Ok(Err(_)) => GatherError::Dropped(label.to_string()),
+                        Ok(Ok(Err(msg))) => GatherError::Subscription(msg),
+                        Ok(Ok(Ok(()))) => unreachable!(),
+                    })
+                }
             }
         }
     };
@@ -191,12 +202,18 @@ async fn gather_cards(
             .cards(shard)
             .ok_or_else(|| GatherError::NoConnection(format!("cards-{shard}")))?;
 
+        // Subscriptions read into the shared connection cache, then are torn down
+        // here once their rows are copied into `snap` — a gather's own rows are
+        // covered by its own subscription during its own read window, so a
+        // concurrent gather's teardown can't disturb it. Without this they leak.
+        let mut handles = Vec::new();
+
         // Phase 1: fetch the named cards to learn their owners.
         let q1 = ids
             .iter()
             .map(|id| format!("SELECT * FROM cards WHERE card_id = {id}"))
             .collect();
-        cards_sub(&conn, q1).await?;
+        handles.push(cards_sub(&conn, q1).await?);
 
         let id_set: HashSet<u32> = ids.iter().copied().collect();
         let owners: HashSet<u32> = latest_cards(&conn)
@@ -211,11 +228,14 @@ async fn gather_cards(
                 .iter()
                 .map(|o| format!("SELECT * FROM cards WHERE owner_id = {o}"))
                 .collect();
-            cards_sub(&conn, q2).await?;
+            handles.push(cards_sub(&conn, q2).await?);
         }
 
         for c in latest_cards(&conn) {
             snap.cards.insert(c.card_id, c);
+        }
+        for h in handles {
+            let _ = h.unsubscribe();
         }
     }
     Ok(())
@@ -234,7 +254,7 @@ async fn gather_region(
     let rix = pool
         .regions_index()
         .ok_or_else(|| GatherError::NoConnection("regionindex".to_string()))?;
-    regionindex_sub(
+    let rix_handle = regionindex_sub(
         &rix,
         vec![format!(
             "SELECT * FROM region_shards WHERE macro_region = {macro_region}"
@@ -258,7 +278,7 @@ async fn gather_region(
     let conn = pool
         .regions(region_shard)
         .ok_or_else(|| GatherError::NoConnection(format!("regions-{region_shard}")))?;
-    regions_sub(
+    let regions_handle = regions_sub(
         &conn,
         vec![
             format!("SELECT * FROM zones WHERE macro_zone = {}", proposal.macro_zone),
@@ -277,6 +297,9 @@ async fn gather_region(
     snap.card_shards = latest_card_shards(&conn);
     let (q, r) = micro_loose_cell(proposal.micro_location);
     snap.tile_card = latest_tile_card_at(&conn, proposal.macro_zone, q, r);
+    // Tear down both subscriptions now their rows are in `snap`.
+    let _ = regions_handle.unsubscribe();
+    let _ = rix_handle.unsubscribe();
     Ok(())
 }
 

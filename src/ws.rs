@@ -84,6 +84,14 @@ struct SubRegistry {
     sid_query: HashMap<u32, String>,
     /// tables whose row callbacks are already wired on this connection.
     wired: HashSet<&'static str>,
+    /// sid → the world `macro_zone` it OBSERVES (only for `cards WHERE macro_zone
+    /// = Z` subs), so `unsub`/disconnect can decrement the zone's observer count.
+    observed: HashMap<u32, u64>,
+    /// This connection's stable observer identity (the conn id) — what the per-zone
+    /// observer count counts distinct of. Connection-, not player-, identity: the
+    /// signal is "is another *connection* watching this zone?", which is exactly
+    /// what gates move-sync, and it doesn't depend on the (racy) gate session.
+    obs_id: u32,
 }
 
 impl SubRegistry {
@@ -108,10 +116,10 @@ impl SubRegistry {
 /// Axum handler for `GET /ws`: upgrade and drive the connection.
 pub async fn handler(upgrade: WebSocketUpgrade, State(pool): State<Arc<Pool>>) -> Response {
     let id = NEXT_CONN_ID.fetch_add(1, Ordering::Relaxed);
-    upgrade.on_upgrade(move |socket| run(socket, pool).instrument(info_span!("conn", id)))
+    upgrade.on_upgrade(move |socket| run(socket, pool, id).instrument(info_span!("conn", id)))
 }
 
-async fn run(socket: WebSocket, pool: Arc<Pool>) {
+async fn run(socket: WebSocket, pool: Arc<Pool>, conn_id: u64) {
     info!("client connected");
     let (mut sink, mut stream) = socket.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<String>();
@@ -172,7 +180,7 @@ async fn run(socket: WebSocket, pool: Arc<Pool>) {
 
     // This client's subscription state: dedups upstreams by query and wires each
     // table's row callbacks once. Owned here, mutated only in this loop.
-    let mut registry = SubRegistry::default();
+    let mut registry = SubRegistry { obs_id: conn_id as u32, ..Default::default() };
 
     // (Clock sync is handled by the forwarder: `call_ok`/`call_err` piggyback for
     // active clients, plus the idle `Time` keepalive — no separate task.)
@@ -212,6 +220,14 @@ async fn run(socket: WebSocket, pool: Arc<Pool>) {
             },
             Message::Close(_) => break,
             Message::Binary(_) | Message::Ping(_) | Message::Pong(_) => {}
+        }
+    }
+
+    // Drop this connection's observer contributions so its zones decrement on
+    // disconnect (else a departed observer would inflate the count).
+    for (_sid, zone) in std::mem::take(&mut registry.observed) {
+        if let Some(count) = pool.unobserve(zone, registry.obs_id) {
+            publish_observers(&pool, zone, count);
         }
     }
 
@@ -280,19 +296,35 @@ async fn handle(
     msg: ClientMsg,
 ) {
     match msg {
-        ClientMsg::Sub { sid, table, filter } => subscribe(
-            upstream_regions,
-            upstream_cards,
-            upstream_chat,
-            upstream_players,
-            registry,
-            tx,
-            sid,
-            &table,
-            filter.as_deref(),
-        ),
+        ClientMsg::Sub { sid, table, filter } => {
+            // Observer counting: a `cards WHERE macro_zone = Z` sub means this
+            // connection now observes zone Z. Keyed on the conn id; push the new
+            // distinct-observer count if it changed.
+            if let Some(zone) = zone_of_card_sub(&table, filter.as_deref()) {
+                registry.observed.insert(sid, zone);
+                if let Some(count) = pool.observe(zone, registry.obs_id) {
+                    publish_observers(pool, zone, count);
+                }
+            }
+            subscribe(
+                upstream_regions,
+                upstream_cards,
+                upstream_chat,
+                upstream_players,
+                registry,
+                tx,
+                sid,
+                &table,
+                filter.as_deref(),
+            )
+        }
         ClientMsg::Unsub { sid } => {
             // Drop this sid; the upstream tears down when its last sharer leaves.
+            if let Some(zone) = registry.observed.remove(&sid) {
+                if let Some(count) = pool.unobserve(zone, registry.obs_id) {
+                    publish_observers(pool, zone, count);
+                }
+            }
             registry.remove_sid(sid);
         }
         ClientMsg::Call { cid, reducer, args } => {
@@ -497,6 +529,31 @@ macro_rules! route {
             }
         }
     }};
+}
+
+/// The world `macro_zone` a card-subscription covers, if its filter is exactly
+/// `macro_zone = <N>` (the client's per-zone card sub). Drives observer counting;
+/// other card subs (`owner_id = …` rosters/inventory) don't count as world
+/// observers and return `None`.
+fn zone_of_card_sub(table: &str, filter: Option<&str>) -> Option<u64> {
+    if table != "cards" {
+        return None;
+    }
+    filter?
+        .trim()
+        .strip_prefix("macro_zone")?
+        .trim_start()
+        .strip_prefix('=')?
+        .trim()
+        .parse::<u64>()
+        .ok()
+}
+
+/// Broadcast a zone's new observer count to every connected client (each filters
+/// to the zones it cares about). A small, infrequent frame (observer counts only
+/// change on anchor-tier sub/unsub), so an unscoped broadcast is fine for now.
+fn publish_observers(pool: &Arc<Pool>, zone: u64, observers: u32) {
+    pool.broadcast(GateMsg::zone_observers(zone, observers));
 }
 
 /// Fan a client subscription to the upstream that owns the table. `zones` and
@@ -769,20 +826,21 @@ async fn relay_call(
             }
         }
     }
-    // spawn_soul: the gate owns content + the dev-loadout composition. Inject the
-    // packed defs the (now content-agnostic) cards reducer needs.
-    if reducer == "spawn_soul" {
+    // create_card: the single generic card-mint primitive. Resolve the content
+    // name (`card_key`, e.g. "player_soul" / "human" / "corpus") → packed def
+    // gate-side; the (content-agnostic) cards reducer takes `packed_definition`.
+    if reducer == "create_card" {
         if let Some(obj) = args.as_object_mut() {
-            let c = pool.content();
-            let pk = |name: &str| serde_json::json!(c.packed_def(name).unwrap_or(0));
-            // dev loadout, in spawn order — the list lives here (single source).
-            let loadout: Vec<u16> = ["dust", "corpus", "corpus", "corpus", "axe"]
-                .iter()
-                .map(|k| c.packed_def(k).unwrap_or(0))
-                .collect();
-            obj.insert("soul_packed".to_string(), pk("player_soul"));
-            obj.insert("human_packed".to_string(), pk("human"));
-            obj.insert("loadout_packed".to_string(), serde_json::json!(loadout));
+            if let Some(key) = obj.get("card_key").and_then(|v| v.as_str()).map(String::from) {
+                let bundle = pool.content();
+                let packed = bundle.packed_def(&key).unwrap_or(0);
+                // Seed the new card's per-instance stock u32 from its `@define`
+                // stock defaults (the content-agnostic shard can't derive these).
+                let stock = resonantdust_data::bridge::stock_default_u32(&bundle, &key);
+                obj.remove("card_key");
+                obj.insert("packed_definition".to_string(), serde_json::json!(packed));
+                obj.insert("stock".to_string(), serde_json::json!(stock));
+            }
         }
     }
     // request_blueprint: the gate computes the builder cap (the soul def's folded
@@ -804,16 +862,6 @@ async fn relay_call(
                 .and_then(|card| bundle.packed_def(&card))
                 .unwrap_or(0);
             obj.insert("blueprint_packed_def".to_string(), serde_json::json!(packed));
-        }
-    }
-    // add_card: resolve the card name → packed def gate-side.
-    if reducer == "add_card" {
-        if let Some(obj) = args.as_object_mut() {
-            if let Some(key) = obj.get("card_key").and_then(|v| v.as_str()).map(String::from) {
-                let packed = pool.content().packed_def(&key).unwrap_or(0);
-                obj.remove("card_key");
-                obj.insert("packed_definition".to_string(), serde_json::json!(packed));
-            }
         }
     }
     if reducer == "set_last_login" {
@@ -838,11 +886,11 @@ async fn relay_call(
     // and `claim_or_login` never reach here (intercepted in `handle`).
     let db = match reducer {
         "request_zone" | "ensure_region" => pool.regions_db(),
-        "spawn_soul" | "add_card" | "place_card" | "request_blueprint" | "move_soul" => {
+        "create_card" | "place_card" | "move_cards" | "request_blueprint" | "move_soul" => {
             pool.cards_db()
         }
         "send_chat_message" => pool.chat_db(),
-        "set_last_login" => pool.players_db(),
+        "set_last_login" | "create_player" => pool.players_db(),
         other => {
             // Nothing routes to the retired `shard` monolith anymore.
             let _ = tx.send(GateMsg::call_err(

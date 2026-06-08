@@ -28,6 +28,8 @@ pub(super) struct ApplyActionArgs {
     pub stat_fields: Vec::<u8>,
     pub stat_bytes: Vec::<u8>,
     pub stat_deltas: Vec::<i8>,
+    pub stock_card_ids: Vec::<u32>,
+    pub stock_values: Vec::<u32>,
 }
 
 impl From<ApplyActionArgs> for super::Reducer {
@@ -48,6 +50,8 @@ impl From<ApplyActionArgs> for super::Reducer {
             stat_fields: args.stat_fields,
             stat_bytes: args.stat_bytes,
             stat_deltas: args.stat_deltas,
+            stock_card_ids: args.stock_card_ids,
+            stock_values: args.stock_values,
 }
 }
 }
@@ -82,8 +86,10 @@ stat_souls: Vec::<u32>,
 stat_fields: Vec::<u8>,
 stat_bytes: Vec::<u8>,
 stat_deltas: Vec::<i8>,
+stock_card_ids: Vec::<u32>,
+stock_values: Vec::<u32>,
 ) -> __sdk::Result<()> {
-        self.apply_action_then(now_ms, completion_ms, bound_ids, bound_masks, destroy_ids, create_defs, create_surfaces, create_macro_zones, create_owners, unlock_targets, unlock_blueprints, stat_souls, stat_fields, stat_bytes, stat_deltas,  |_, _| {})
+        self.apply_action_then(now_ms, completion_ms, bound_ids, bound_masks, destroy_ids, create_defs, create_surfaces, create_macro_zones, create_owners, unlock_targets, unlock_blueprints, stat_souls, stat_fields, stat_bytes, stat_deltas, stock_card_ids, stock_values,  |_, _| {})
     }
 
     /// Request that the remote module invoke the reducer `apply_action` to run as soon as possible,
@@ -109,6 +115,8 @@ stat_souls: Vec::<u32>,
 stat_fields: Vec::<u8>,
 stat_bytes: Vec::<u8>,
 stat_deltas: Vec::<i8>,
+stock_card_ids: Vec::<u32>,
+stock_values: Vec::<u32>,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
@@ -134,12 +142,14 @@ stat_souls: Vec::<u32>,
 stat_fields: Vec::<u8>,
 stat_bytes: Vec::<u8>,
 stat_deltas: Vec::<i8>,
+stock_card_ids: Vec::<u32>,
+stock_values: Vec::<u32>,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
             + 'static,
     ) -> __sdk::Result<()> {
-        self.imp.invoke_reducer_with_callback(ApplyActionArgs { now_ms, completion_ms, bound_ids, bound_masks, destroy_ids, create_defs, create_surfaces, create_macro_zones, create_owners, unlock_targets, unlock_blueprints, stat_souls, stat_fields, stat_bytes, stat_deltas,  }, callback)
+        self.imp.invoke_reducer_with_callback(ApplyActionArgs { now_ms, completion_ms, bound_ids, bound_masks, destroy_ids, create_defs, create_surfaces, create_macro_zones, create_owners, unlock_targets, unlock_blueprints, stat_souls, stat_fields, stat_bytes, stat_deltas, stock_card_ids, stock_values,  }, callback)
     }
 }
 

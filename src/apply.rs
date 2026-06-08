@@ -203,12 +203,15 @@ pub async fn apply(
     let mut create_surfaces: Vec<u8> = Vec::new();
     let mut create_macro_zones: Vec<u64> = Vec::new();
     let mut create_owners: Vec<u32> = Vec::new();
+    let mut create_stocks: Vec<u32> = Vec::new();
     let mut unlock_targets: Vec<u32> = Vec::new();
     let mut unlock_blueprints: Vec<u16> = Vec::new();
     let mut stat_souls: Vec<u32> = Vec::new();
     let mut stat_fields: Vec<u8> = Vec::new();
     let mut stat_bytes: Vec<u8> = Vec::new();
     let mut stat_deltas: Vec<i8> = Vec::new();
+    let mut stock_card_ids: Vec<u32> = Vec::new();
+    let mut stock_values: Vec<u32> = Vec::new();
 
     for effect in &plan.effects {
         match effect {
@@ -234,14 +237,17 @@ pub async fn apply(
                 macro_zone,
                 owner_id,
             } => {
-                let packed_def = pool
-                    .content()
+                let bundle = pool.content();
+                let packed_def = bundle
                     .packed_def(def_key)
                     .ok_or_else(|| format!("create: def {def_key:?} not in DSL content"))?;
                 create_defs.push(packed_def);
                 create_surfaces.push(*surface);
                 create_macro_zones.push(*macro_zone);
                 create_owners.push(*owner_id);
+                // Seed the spawned card's per-instance stock u32 from its
+                // `@define` stock defaults (content-agnostic shard can't).
+                create_stocks.push(resonantdust_data::bridge::stock_default_u32(&bundle, def_key));
                 // A created stat card increments its soul's counter.
                 if let Some((field, byte)) = stat_slot(def_key) {
                     if let Some(soul) = owning_soul(snap, *owner_id) {
@@ -259,6 +265,11 @@ pub async fn apply(
                 );
             }
             Effect::ModifyTileStock { .. } => { /* applied on the region DB above */ }
+            Effect::SetCardStock { card_id, stock } => {
+                // Gate-computed absolute new stock for the card (write @completion).
+                stock_card_ids.push(*card_id);
+                stock_values.push(*stock);
+            }
             Effect::UnlockBlueprint {
                 blueprint_id,
                 target_card_id,
@@ -267,6 +278,24 @@ pub async fn apply(
                 unlock_blueprints.push(*blueprint_id);
             }
         }
+    }
+
+    // Stack splice: a destroyed card that is a stack ROOT orphans its members
+    // (they point to it via `micro_location`). The SHARED `stack::plan_splice`
+    // (destroy-side sibling of `plan_place`, over the snapshot's `StackStore`)
+    // re-roots them; we just map its `Write`s to the reducer's parallel arrays.
+    // Folded into `apply_action`'s per-card completion rows (no extra writes), so a
+    // member that's also bound (held + finalized @completion) coalesces.
+    let mut reroot_ids: Vec<u32> = Vec::new();
+    let mut reroot_macro_zones: Vec<u64> = Vec::new();
+    let mut reroot_micro_locations: Vec<u32> = Vec::new();
+    let mut reroot_stack_states: Vec<u8> = Vec::new();
+    for w in resonantdust_data::stack::plan_splice(snap, &destroy_ids, now_ms) {
+        let (micro_location, flags) = w.micro.apply(0);
+        reroot_ids.push(w.card_id);
+        reroot_macro_zones.push(w.macro_zone);
+        reroot_micro_locations.push(micro_location);
+        reroot_stack_states.push((flags & resonantdust_data::card_model::placement_mask()) as u8);
     }
 
     call(
@@ -284,12 +313,19 @@ pub async fn apply(
             "create_surfaces": create_surfaces,
             "create_macro_zones": create_macro_zones,
             "create_owners": create_owners,
+            "create_stocks": create_stocks,
             "unlock_targets": unlock_targets,
             "unlock_blueprints": unlock_blueprints,
             "stat_souls": stat_souls,
             "stat_fields": stat_fields,
             "stat_bytes": stat_bytes,
             "stat_deltas": stat_deltas,
+            "stock_card_ids": stock_card_ids,
+            "stock_values": stock_values,
+            "reroot_ids": reroot_ids,
+            "reroot_macro_zones": reroot_macro_zones,
+            "reroot_micro_locations": reroot_micro_locations,
+            "reroot_stack_states": reroot_stack_states,
         }),
     )
     .await?;

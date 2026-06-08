@@ -25,10 +25,10 @@ pub mod soul_private_type;
 pub mod tile_point_type;
 pub mod zone_type;
 pub mod acquire_card_shard_reducer;
-pub mod add_card_reducer;
 pub mod apply_action_reducer;
 pub mod apply_action_tile_reducer;
 pub mod claim_pending_reducer;
+pub mod create_card_reducer;
 pub mod ensure_region_reducer;
 pub mod move_soul_reducer;
 pub mod place_card_reducer;
@@ -37,7 +37,6 @@ pub mod release_pending_reducer;
 pub mod request_blueprint_reducer;
 pub mod request_zone_reducer;
 pub mod set_shard_identity_reducer;
-pub mod spawn_soul_reducer;
 pub mod card_shards_table;
 pub mod cards_table;
 pub mod regions_table;
@@ -65,10 +64,10 @@ pub use soul_privates_table::*;
 pub use souls_table::*;
 pub use zones_table::*;
 pub use acquire_card_shard_reducer::acquire_card_shard;
-pub use add_card_reducer::add_card;
 pub use apply_action_reducer::apply_action;
 pub use apply_action_tile_reducer::apply_action_tile;
 pub use claim_pending_reducer::claim_pending;
+pub use create_card_reducer::create_card;
 pub use ensure_region_reducer::ensure_region;
 pub use move_soul_reducer::move_soul;
 pub use place_card_reducer::place_card;
@@ -77,7 +76,6 @@ pub use release_pending_reducer::release_pending;
 pub use request_blueprint_reducer::request_blueprint;
 pub use request_zone_reducer::request_zone;
 pub use set_shard_identity_reducer::set_shard_identity;
-pub use spawn_soul_reducer::spawn_soul;
 
 #[derive(Clone, PartialEq, Debug)]
 
@@ -90,11 +88,6 @@ pub enum Reducer {
         AcquireCardShard {
         time_ms: u64,
         data_shard: u16,
-}    ,
-    AddCard {
-        client_time_ms: u64,
-        soul_card_id: u32,
-        packed_definition: u16,
 }    ,
     ApplyAction {
         now_ms: u64,
@@ -112,6 +105,8 @@ pub enum Reducer {
         stat_fields: Vec::<u8>,
         stat_bytes: Vec::<u8>,
         stat_deltas: Vec::<i8>,
+        stock_card_ids: Vec::<u32>,
+        stock_values: Vec::<u32>,
 }    ,
     ApplyActionTile {
         now_ms: u64,
@@ -130,6 +125,12 @@ pub enum Reducer {
         root: u32,
         bindings: Vec::<Vec::<u32>>,
         completion_ms: u64,
+}    ,
+    CreateCard {
+        client_time_ms: u64,
+        owner_id: u32,
+        surface: u8,
+        packed_definition: u16,
 }    ,
     EnsureRegion {
         client_time_ms: u64,
@@ -176,14 +177,6 @@ pub enum Reducer {
         card_db: u8,
         shard: u16,
 }    ,
-    SpawnSoul {
-        client_time_ms: u64,
-        player_id: u32,
-        soul_index: u32,
-        soul_packed: u16,
-        human_packed: u16,
-        loadout_packed: Vec::<u16>,
-}    ,
 }
 
 
@@ -195,10 +188,10 @@ impl __sdk::Reducer for Reducer {
     fn reducer_name(&self) -> &'static str {
         match self {
                         Reducer::AcquireCardShard { .. } => "acquire_card_shard",
-            Reducer::AddCard { .. } => "add_card",
             Reducer::ApplyAction { .. } => "apply_action",
             Reducer::ApplyActionTile { .. } => "apply_action_tile",
             Reducer::ClaimPending { .. } => "claim_pending",
+            Reducer::CreateCard { .. } => "create_card",
             Reducer::EnsureRegion { .. } => "ensure_region",
             Reducer::MoveSoul { .. } => "move_soul",
             Reducer::PlaceCard { .. } => "place_card",
@@ -207,7 +200,6 @@ impl __sdk::Reducer for Reducer {
             Reducer::RequestBlueprint { .. } => "request_blueprint",
             Reducer::RequestZone { .. } => "request_zone",
             Reducer::SetShardIdentity { .. } => "set_shard_identity",
-            Reducer::SpawnSoul { .. } => "spawn_soul",
             _ => unreachable!(),
 }
 }
@@ -220,15 +212,6 @@ fn args_bsatn(&self) -> Result<Vec<u8>, __sats::bsatn::EncodeError> {
 }             => __sats::bsatn::to_vec(&acquire_card_shard_reducer::AcquireCardShardArgs {
                 time_ms: time_ms.clone(),
                 data_shard: data_shard.clone(),
-}),
-            Reducer::AddCard{
-                client_time_ms,
-                soul_card_id,
-                packed_definition,
-}             => __sats::bsatn::to_vec(&add_card_reducer::AddCardArgs {
-                client_time_ms: client_time_ms.clone(),
-                soul_card_id: soul_card_id.clone(),
-                packed_definition: packed_definition.clone(),
 }),
             Reducer::ApplyAction{
                 now_ms,
@@ -246,6 +229,8 @@ fn args_bsatn(&self) -> Result<Vec<u8>, __sats::bsatn::EncodeError> {
                 stat_fields,
                 stat_bytes,
                 stat_deltas,
+                stock_card_ids,
+                stock_values,
 }             => __sats::bsatn::to_vec(&apply_action_reducer::ApplyActionArgs {
                 now_ms: now_ms.clone(),
                 completion_ms: completion_ms.clone(),
@@ -262,6 +247,8 @@ fn args_bsatn(&self) -> Result<Vec<u8>, __sats::bsatn::EncodeError> {
                 stat_fields: stat_fields.clone(),
                 stat_bytes: stat_bytes.clone(),
                 stat_deltas: stat_deltas.clone(),
+                stock_card_ids: stock_card_ids.clone(),
+                stock_values: stock_values.clone(),
 }),
             Reducer::ApplyActionTile{
                 now_ms,
@@ -296,6 +283,17 @@ fn args_bsatn(&self) -> Result<Vec<u8>, __sats::bsatn::EncodeError> {
                 root: root.clone(),
                 bindings: bindings.clone(),
                 completion_ms: completion_ms.clone(),
+}),
+            Reducer::CreateCard{
+                client_time_ms,
+                owner_id,
+                surface,
+                packed_definition,
+}             => __sats::bsatn::to_vec(&create_card_reducer::CreateCardArgs {
+                client_time_ms: client_time_ms.clone(),
+                owner_id: owner_id.clone(),
+                surface: surface.clone(),
+                packed_definition: packed_definition.clone(),
 }),
             Reducer::EnsureRegion{
                 client_time_ms,
@@ -378,21 +376,6 @@ fn args_bsatn(&self) -> Result<Vec<u8>, __sats::bsatn::EncodeError> {
 }             => __sats::bsatn::to_vec(&set_shard_identity_reducer::SetShardIdentityArgs {
                 card_db: card_db.clone(),
                 shard: shard.clone(),
-}),
-            Reducer::SpawnSoul{
-                client_time_ms,
-                player_id,
-                soul_index,
-                soul_packed,
-                human_packed,
-                loadout_packed,
-}             => __sats::bsatn::to_vec(&spawn_soul_reducer::SpawnSoulArgs {
-                client_time_ms: client_time_ms.clone(),
-                player_id: player_id.clone(),
-                soul_index: soul_index.clone(),
-                soul_packed: soul_packed.clone(),
-                human_packed: human_packed.clone(),
-                loadout_packed: loadout_packed.clone(),
 }),
             _ => unreachable!(),
 }

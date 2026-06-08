@@ -12,6 +12,7 @@
 //! subscriptions and reducer calls.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use tracing::{error, info, warn};
@@ -28,11 +29,21 @@ pub fn http_client() -> &'static reqwest::Client {
     CLIENT.get_or_init(reqwest::Client::new)
 }
 
-/// Stamp a `connect_<module>(uri, db_name) -> Option<Arc<DbConnection>>`
+/// Stamp a `connect_<module>(uri, db_name, alive) -> Option<Arc<DbConnection>>`
 /// using the module's concrete builder + the standard lifecycle logging.
+///
+/// `alive` is a shared flag the connection clears the instant it becomes
+/// unusable — a disconnect (the DB was redeployed/wiped/restarted) or a failed
+/// connect. The pool checks it on every getter and rebuilds a dead connection,
+/// so a replaced upstream DB self-heals instead of stalling every gather on a
+/// cached-but-dead `Arc` forever (the SDK does NOT auto-reconnect).
 macro_rules! connector {
     ($fn:ident, $module:ident) => {
-        fn $fn(uri: &str, db_name: &str) -> Option<Arc<bindings::$module::DbConnection>> {
+        fn $fn(
+            uri: &str,
+            db_name: &str,
+            alive: Arc<AtomicBool>,
+        ) -> Option<Arc<bindings::$module::DbConnection>> {
             use bindings::$module::DbConnection;
             let name = db_name.to_string();
             let built = DbConnection::builder()
@@ -44,13 +55,21 @@ macro_rules! connector {
                 })
                 .on_connect_error({
                     let n = name.clone();
-                    move |_ctx, err| error!(db = %n, %err, "upstream connect error")
+                    let alive = alive.clone();
+                    move |_ctx, err| {
+                        alive.store(false, Ordering::SeqCst);
+                        error!(db = %n, %err, "upstream connect error")
+                    }
                 })
                 .on_disconnect({
                     let n = name.clone();
-                    move |_ctx, err| match err {
-                        Some(err) => warn!(db = %n, %err, "upstream disconnected"),
-                        None => info!(db = %n, "upstream disconnected"),
+                    let alive = alive.clone();
+                    move |_ctx, err| {
+                        alive.store(false, Ordering::SeqCst);
+                        match err {
+                            Some(err) => warn!(db = %n, %err, "upstream disconnected"),
+                            None => info!(db = %n, "upstream disconnected"),
+                        }
                     }
                 })
                 .build();
@@ -61,6 +80,7 @@ macro_rules! connector {
                     Some(Arc::new(conn))
                 }
                 Err(err) => {
+                    alive.store(false, Ordering::SeqCst);
                     error!(db = %name, %err, "failed to build connection");
                     None
                 }
@@ -86,13 +106,22 @@ pub struct Pool {
     /// version live. Readers take a cheap `Arc` snapshot ([`Pool::content`]) and
     /// run a whole action against one consistent version even if a swap races.
     content: RwLock<Arc<crate::content::LoadedContent>>,
-    cards: Mutex<HashMap<u16, Arc<bindings::shard::DbConnection>>>,
-    regions: Mutex<HashMap<u16, Arc<bindings::shard::DbConnection>>>,
-    regions_index: Mutex<Option<Arc<bindings::regionindex::DbConnection>>>,
+    // Each pooled connection is cached with an `alive` flag it clears on
+    // disconnect/failed-connect; a getter rebuilds the entry when it's dead, so a
+    // redeployed/wiped upstream DB self-heals (see `connector!`).
+    cards: Mutex<HashMap<u16, (Arc<bindings::shard::DbConnection>, Arc<AtomicBool>)>>,
+    regions: Mutex<HashMap<u16, (Arc<bindings::shard::DbConnection>, Arc<AtomicBool>)>>,
+    regions_index: Mutex<Option<(Arc<bindings::regionindex::DbConnection>, Arc<AtomicBool>)>>,
     /// Live client WS senders, for gate-initiated broadcasts (e.g. the
     /// `content_changed` push after `add_content`). Dead senders are pruned
     /// lazily on the next broadcast.
     clients: Mutex<Vec<tokio::sync::mpsc::UnboundedSender<String>>>,
+    /// Per-zone distinct-player OBSERVER counts, derived from card-subscriptions
+    /// (`cards WHERE macro_zone = Z`). `zone -> (player -> refcount)`; a player
+    /// observes a zone while ≥1 of its card-subs covers it, so `observers =
+    /// players with refcount > 0`. The gate pushes changes to the `zone_observers`
+    /// table; clients gate move-sync on it (commit-based position, Phase 2).
+    observers: Mutex<HashMap<u64, HashMap<u32, u32>>>,
 }
 
 impl Pool {
@@ -104,7 +133,36 @@ impl Pool {
             regions: Mutex::new(HashMap::new()),
             regions_index: Mutex::new(None),
             clients: Mutex::new(Vec::new()),
+            observers: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Record that `player` has one more card-sub covering `zone`. Returns the new
+    /// distinct-observer count IF it changed (the player went 0→1), else `None`.
+    pub fn observe(&self, zone: u64, player: u32) -> Option<u32> {
+        let mut map = self.observers.lock().unwrap();
+        let z = map.entry(zone).or_default();
+        let rc = z.entry(player).or_insert(0);
+        *rc += 1;
+        (*rc == 1).then(|| z.len() as u32)
+    }
+
+    /// Drop one of `player`'s card-subs covering `zone`. Returns the new distinct
+    /// count IF it changed (the player went 1→0), else `None`.
+    pub fn unobserve(&self, zone: u64, player: u32) -> Option<u32> {
+        let mut map = self.observers.lock().unwrap();
+        let z = map.get_mut(&zone)?;
+        let rc = z.get_mut(&player)?;
+        *rc -= 1;
+        if *rc > 0 {
+            return None;
+        }
+        z.remove(&player);
+        let n = z.len() as u32;
+        if z.is_empty() {
+            map.remove(&zone);
+        }
+        Some(n)
     }
 
     /// Register a client's WS sender for gate-initiated broadcasts. Called once
@@ -191,36 +249,48 @@ impl Pool {
         self.cfg.content_authority.as_deref()
     }
 
-    /// Connection to the `cards` shard `shard`, establishing it on first use.
+    /// Connection to the `cards` shard `shard`, establishing it on first use and
+    /// re-establishing it if the cached one has died (DB redeploy/wipe).
     pub fn cards(&self, shard: u16) -> Option<Arc<bindings::shard::DbConnection>> {
         let mut map = self.cards.lock().unwrap();
-        if let Some(conn) = map.get(&shard) {
-            return Some(conn.clone());
+        if let Some((conn, alive)) = map.get(&shard) {
+            if alive.load(Ordering::SeqCst) {
+                return Some(conn.clone());
+            }
         }
-        let conn = connect_cards(&self.cfg.uri, &self.cfg.cards_db(shard))?;
-        map.insert(shard, conn.clone());
+        let alive = Arc::new(AtomicBool::new(true));
+        let conn = connect_cards(&self.cfg.uri, &self.cfg.cards_db(shard), alive.clone())?;
+        map.insert(shard, (conn.clone(), alive));
         Some(conn)
     }
 
-    /// Connection to the `regions` shard `shard`, establishing it on first use.
+    /// Connection to the `regions` shard `shard`, establishing it on first use and
+    /// re-establishing it if the cached one has died (DB redeploy/wipe).
     pub fn regions(&self, shard: u16) -> Option<Arc<bindings::shard::DbConnection>> {
         let mut map = self.regions.lock().unwrap();
-        if let Some(conn) = map.get(&shard) {
-            return Some(conn.clone());
+        if let Some((conn, alive)) = map.get(&shard) {
+            if alive.load(Ordering::SeqCst) {
+                return Some(conn.clone());
+            }
         }
-        let conn = connect_regions(&self.cfg.uri, &self.cfg.regions_db(shard))?;
-        map.insert(shard, conn.clone());
+        let alive = Arc::new(AtomicBool::new(true));
+        let conn = connect_regions(&self.cfg.uri, &self.cfg.regions_db(shard), alive.clone())?;
+        map.insert(shard, (conn.clone(), alive));
         Some(conn)
     }
 
-    /// Connection to the single `regionindex` DB (region → regions shard).
+    /// Connection to the single `regionindex` DB (region → regions shard),
+    /// re-establishing it if the cached one has died (DB redeploy/wipe).
     pub fn regions_index(&self) -> Option<Arc<bindings::regionindex::DbConnection>> {
         let mut slot = self.regions_index.lock().unwrap();
-        if let Some(conn) = slot.as_ref() {
-            return Some(conn.clone());
+        if let Some((conn, alive)) = slot.as_ref() {
+            if alive.load(Ordering::SeqCst) {
+                return Some(conn.clone());
+            }
         }
-        let conn = connect_regionindex(&self.cfg.uri, &self.cfg.regions_index_db())?;
-        *slot = Some(conn.clone());
+        let alive = Arc::new(AtomicBool::new(true));
+        let conn = connect_regionindex(&self.cfg.uri, &self.cfg.regions_index_db(), alive.clone())?;
+        *slot = Some((conn.clone(), alive));
         Some(conn)
     }
 

@@ -12,54 +12,58 @@ use spacetimedb_sdk::__codegen::{
 
 #[derive(__lib::ser::Serialize, __lib::de::Deserialize, Clone, PartialEq, Debug)]
 #[sats(crate = __lib)]
-pub(super) struct AddCardArgs {
+pub(super) struct CreateCardArgs {
     pub client_time_ms: u64,
-    pub soul_card_id: u32,
+    pub owner_id: u32,
+    pub surface: u8,
     pub packed_definition: u16,
 }
 
-impl From<AddCardArgs> for super::Reducer {
-    fn from(args: AddCardArgs) -> Self {
-        Self::AddCard {
+impl From<CreateCardArgs> for super::Reducer {
+    fn from(args: CreateCardArgs) -> Self {
+        Self::CreateCard {
             client_time_ms: args.client_time_ms,
-            soul_card_id: args.soul_card_id,
+            owner_id: args.owner_id,
+            surface: args.surface,
             packed_definition: args.packed_definition,
 }
 }
 }
 
-impl __sdk::InModule for AddCardArgs {
+impl __sdk::InModule for CreateCardArgs {
     type Module = super::RemoteModule;
 }
 
 #[allow(non_camel_case_types)]
-/// Extension trait for access to the reducer `add_card`.
+/// Extension trait for access to the reducer `create_card`.
 ///
 /// Implemented for [`super::RemoteReducers`].
-pub trait add_card {
-    /// Request that the remote module invoke the reducer `add_card` to run as soon as possible.
+pub trait create_card {
+    /// Request that the remote module invoke the reducer `create_card` to run as soon as possible.
     ///
     /// This method returns immediately, and errors only if we are unable to send the request.
     /// The reducer will run asynchronously in the future,
     ///  and this method provides no way to listen for its completion status.
-    /// /// Use [`add_card:add_card_then`] to run a callback after the reducer completes.
-    fn add_card(&self, client_time_ms: u64,
-soul_card_id: u32,
+    /// /// Use [`create_card:create_card_then`] to run a callback after the reducer completes.
+    fn create_card(&self, client_time_ms: u64,
+owner_id: u32,
+surface: u8,
 packed_definition: u16,
 ) -> __sdk::Result<()> {
-        self.add_card_then(client_time_ms, soul_card_id, packed_definition,  |_, _| {})
+        self.create_card_then(client_time_ms, owner_id, surface, packed_definition,  |_, _| {})
     }
 
-    /// Request that the remote module invoke the reducer `add_card` to run as soon as possible,
+    /// Request that the remote module invoke the reducer `create_card` to run as soon as possible,
     /// registering `callback` to run when we are notified that the reducer completed.
     ///
     /// This method returns immediately, and errors only if we are unable to send the request.
     /// The reducer will run asynchronously in the future,
     ///  and its status can be observed with the `callback`.
-    fn add_card_then(
+    fn create_card_then(
         &self,
         client_time_ms: u64,
-soul_card_id: u32,
+owner_id: u32,
+surface: u8,
 packed_definition: u16,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
@@ -68,18 +72,19 @@ packed_definition: u16,
     ) -> __sdk::Result<()>;
 }
 
-impl add_card for super::RemoteReducers {
-    fn add_card_then(
+impl create_card for super::RemoteReducers {
+    fn create_card_then(
         &self,
         client_time_ms: u64,
-soul_card_id: u32,
+owner_id: u32,
+surface: u8,
 packed_definition: u16,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
             + 'static,
     ) -> __sdk::Result<()> {
-        self.imp.invoke_reducer_with_callback(AddCardArgs { client_time_ms, soul_card_id, packed_definition,  }, callback)
+        self.imp.invoke_reducer_with_callback(CreateCardArgs { client_time_ms, owner_id, surface, packed_definition,  }, callback)
     }
 }
 

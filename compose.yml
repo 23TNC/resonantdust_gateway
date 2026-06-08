@@ -44,6 +44,28 @@ services:
       GATE_LISTEN: "0.0.0.0:8474"
     command: ["sleep", "infinity"]
 
+  # Parallel gateway pinned to the `test` environment (its own
+  # `resonantdust-test-*` databases) on port 8475 — the gate the TEST HARNESS
+  # drives. Wiped/reseeded by the harness independently of `claude` (agent dev)
+  # and `dev` (user), so test data can be cleared without touching either. Same
+  # image / bind-mount / shared binary; `GATE_ENV` + `GATE_LISTEN` point it at
+  # the test DBs. Drive with `GATE_ENV=test bin/gate <cmd>` (logs to
+  # gateway/gate-test.log).
+  gate-test:
+    image: rust:slim
+    networks:
+      - resonantdust
+    ports:
+      - "8475:8475"
+    volumes:
+      - .:/workspace
+      - ../content:/workspace/content
+    working_dir: /workspace
+    environment:
+      GATE_ENV: "test"
+      GATE_LISTEN: "0.0.0.0:8475"
+    command: ["sleep", "infinity"]
+
   # One-shot release build. `bin/gate build` invokes this with
   # `run --rm build`; cargo writes to /workspace/target, which the `gate`
   # service mounts from the same host dir, so the freshly built binary is

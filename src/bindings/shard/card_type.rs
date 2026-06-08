@@ -21,7 +21,7 @@ pub struct Card {
     pub packed_definition: u16,
     pub flags: u32,
     pub flags_bk: u8,
-    pub stock: u8,
+    pub stock: u32,
 }
 
 
@@ -42,7 +42,7 @@ pub struct CardCols {
     pub packed_definition: __sdk::__query_builder::Col<Card, u16>,
     pub flags: __sdk::__query_builder::Col<Card, u32>,
     pub flags_bk: __sdk::__query_builder::Col<Card, u8>,
-    pub stock: __sdk::__query_builder::Col<Card, u8>,
+    pub stock: __sdk::__query_builder::Col<Card, u32>,
 }
 
 impl __sdk::__query_builder::HasCols for Card {
