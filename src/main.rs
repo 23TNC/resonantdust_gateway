@@ -180,7 +180,7 @@ fn spawn_content_poll(pool: Arc<connections::Pool>) {
                     pool.swap_content(next);
                     let version = pool.content_version_hex();
                     tracing::info!(%version, "peer: content updated from authority");
-                    pool.broadcast(resonantdust_data::protocol::GateMsg::content_changed(version));
+                    pool.broadcast(resonantdust_protocol::protocol::GateMsg::content_changed(version));
                 }
                 Err(e) => tracing::warn!(error = %e, "peer: bad authority payload"),
             }

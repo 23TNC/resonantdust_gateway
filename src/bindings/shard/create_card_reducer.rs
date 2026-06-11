@@ -17,6 +17,11 @@ pub(super) struct CreateCardArgs {
     pub owner_id: u32,
     pub surface: u8,
     pub packed_definition: u16,
+    pub stock: u32,
+    pub macro_zone: u64,
+    pub q: u8,
+    pub r: u8,
+    pub distance: u16,
 }
 
 impl From<CreateCardArgs> for super::Reducer {
@@ -26,6 +31,11 @@ impl From<CreateCardArgs> for super::Reducer {
             owner_id: args.owner_id,
             surface: args.surface,
             packed_definition: args.packed_definition,
+            stock: args.stock,
+            macro_zone: args.macro_zone,
+            q: args.q,
+            r: args.r,
+            distance: args.distance,
 }
 }
 }
@@ -49,8 +59,13 @@ pub trait create_card {
 owner_id: u32,
 surface: u8,
 packed_definition: u16,
+stock: u32,
+macro_zone: u64,
+q: u8,
+r: u8,
+distance: u16,
 ) -> __sdk::Result<()> {
-        self.create_card_then(client_time_ms, owner_id, surface, packed_definition,  |_, _| {})
+        self.create_card_then(client_time_ms, owner_id, surface, packed_definition, stock, macro_zone, q, r, distance,  |_, _| {})
     }
 
     /// Request that the remote module invoke the reducer `create_card` to run as soon as possible,
@@ -65,6 +80,11 @@ packed_definition: u16,
 owner_id: u32,
 surface: u8,
 packed_definition: u16,
+stock: u32,
+macro_zone: u64,
+q: u8,
+r: u8,
+distance: u16,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
@@ -79,12 +99,17 @@ impl create_card for super::RemoteReducers {
 owner_id: u32,
 surface: u8,
 packed_definition: u16,
+stock: u32,
+macro_zone: u64,
+q: u8,
+r: u8,
+distance: u16,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
             + 'static,
     ) -> __sdk::Result<()> {
-        self.imp.invoke_reducer_with_callback(CreateCardArgs { client_time_ms, owner_id, surface, packed_definition,  }, callback)
+        self.imp.invoke_reducer_with_callback(CreateCardArgs { client_time_ms, owner_id, surface, packed_definition, stock, macro_zone, q, r, distance,  }, callback)
     }
 }
 

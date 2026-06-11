@@ -25,10 +25,14 @@ reqwest = { version = "0.12", default-features = false, features = ["json"] }
 # Upstream client to the SpacetimeDB shards. Must match the generator that
 # produced src/bindings/ (spacetime cli 2.3.0).
 spacetimedb-sdk = "2.3"
-# Shared DSL VM rlib (the rewrite's recipe engine). Bind-mounted at
-# /workspace/shared-data by the compose `build` service (it lives in the main repo
-# at shared/data). The gate links it directly; the client gets it built to wasm.
-resonantdust-data = { path = "shared/data", features = ["protocol"] }
+# Shared logic rlibs (codec/bit-fields, DSL VM, state/stack, wire protocol),
+# bind-mounted at /workspace/shared by the compose `build` service (they live in
+# the main repo's shared/ workspace). The gate links them directly; the client
+# gets them built to wasm.
+resonantdust-codec = { path = "shared/codec" }
+resonantdust-dsl = { path = "shared/dsl" }
+resonantdust-state = { path = "shared/state" }
+resonantdust-protocol = { path = "shared/protocol" }
 # Recipe glue (run a recipe → ActionPlan over a CardStore) — moved out of the
 # gate into shared so the client reuses it. The gate's Snapshot impls CardStore.
 resonantdust-rules = { path = "shared/rules" }

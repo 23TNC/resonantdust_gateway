@@ -31,9 +31,6 @@ pub struct Zone {
     pub t_10: u64,
     pub t_11: u64,
     pub t_12: u64,
-    pub t_13: u64,
-    pub t_14: u64,
-    pub t_15: u64,
 }
 
 
@@ -64,9 +61,6 @@ pub struct ZoneCols {
     pub t_10: __sdk::__query_builder::Col<Zone, u64>,
     pub t_11: __sdk::__query_builder::Col<Zone, u64>,
     pub t_12: __sdk::__query_builder::Col<Zone, u64>,
-    pub t_13: __sdk::__query_builder::Col<Zone, u64>,
-    pub t_14: __sdk::__query_builder::Col<Zone, u64>,
-    pub t_15: __sdk::__query_builder::Col<Zone, u64>,
 }
 
 impl __sdk::__query_builder::HasCols for Zone {
@@ -91,9 +85,6 @@ impl __sdk::__query_builder::HasCols for Zone {
             t_10: __sdk::__query_builder::Col::new(table_name, "t_10"),
             t_11: __sdk::__query_builder::Col::new(table_name, "t_11"),
             t_12: __sdk::__query_builder::Col::new(table_name, "t_12"),
-            t_13: __sdk::__query_builder::Col::new(table_name, "t_13"),
-            t_14: __sdk::__query_builder::Col::new(table_name, "t_14"),
-            t_15: __sdk::__query_builder::Col::new(table_name, "t_15"),
 
         }
     }

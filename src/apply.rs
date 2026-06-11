@@ -22,8 +22,8 @@ use std::collections::BTreeSet;
 use serde_json::{json, Value};
 use tracing::debug;
 
-use resonantdust_data::packed::micro_loose_cell;
-use resonantdust_data::plan::{ActionPlan, Effect, HoldKinds};
+use resonantdust_codec::packed::micro_loose_cell;
+use resonantdust_codec::plan::{ActionPlan, Effect, HoldKinds};
 
 use crate::connections::Pool;
 use crate::gather::{Proposal, Snapshot};
@@ -204,6 +204,9 @@ pub async fn apply(
     let mut create_macro_zones: Vec<u64> = Vec::new();
     let mut create_owners: Vec<u32> = Vec::new();
     let mut create_stocks: Vec<u32> = Vec::new();
+    // Per-product container disk radius, so a recipe output lands in a cell that
+    // EXISTS in its target region disk (mirrors create_card's `distance`).
+    let mut create_distances: Vec<u16> = Vec::new();
     let mut unlock_targets: Vec<u32> = Vec::new();
     let mut unlock_blueprints: Vec<u16> = Vec::new();
     let mut stat_souls: Vec<u32> = Vec::new();
@@ -247,7 +250,7 @@ pub async fn apply(
                 create_owners.push(*owner_id);
                 // Seed the spawned card's per-instance stock u32 from its
                 // `@define` stock defaults (content-agnostic shard can't).
-                create_stocks.push(resonantdust_data::bridge::stock_default_u32(&bundle, def_key));
+                create_stocks.push(resonantdust_dsl::bridge::stock_default_u32(&bundle, def_key));
                 // A created stat card increments its soul's counter.
                 if let Some((field, byte)) = stat_slot(def_key) {
                     if let Some(soul) = owning_soul(snap, *owner_id) {
@@ -290,12 +293,21 @@ pub async fn apply(
     let mut reroot_macro_zones: Vec<u64> = Vec::new();
     let mut reroot_micro_locations: Vec<u32> = Vec::new();
     let mut reroot_stack_states: Vec<u8> = Vec::new();
-    for w in resonantdust_data::stack::plan_splice(snap, &destroy_ids, now_ms) {
+    for w in resonantdust_state::stack::plan_splice(snap, &destroy_ids, now_ms) {
         let (micro_location, flags) = w.micro.apply(0);
         reroot_ids.push(w.card_id);
         reroot_macro_zones.push(w.macro_zone);
         reroot_micro_locations.push(micro_location);
-        reroot_stack_states.push((flags & resonantdust_data::card_model::placement_mask()) as u8);
+        reroot_stack_states.push((flags & resonantdust_codec::card_model::placement_mask()) as u8);
+    }
+
+    // Disk radius per created card — authoritative (reads the owner card like
+    // `ensure_region`/`create_card`), so recipe outputs only land on cells that
+    // exist in the target region disk. The gather snapshot isn't a reliable
+    // source (the product's owner soul isn't always in it).
+    for i in 0..create_owners.len() {
+        let mz = resonantdust_codec::packed::pack_macro_zone_full(create_owners[i], create_surfaces[i], 0, 0);
+        create_distances.push(crate::gather::region_distance(pool, mz).await);
     }
 
     call(
@@ -313,6 +325,7 @@ pub async fn apply(
             "create_surfaces": create_surfaces,
             "create_macro_zones": create_macro_zones,
             "create_owners": create_owners,
+            "create_distances": create_distances,
             "create_stocks": create_stocks,
             "unlock_targets": unlock_targets,
             "unlock_blueprints": unlock_blueprints,

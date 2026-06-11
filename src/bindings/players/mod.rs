@@ -17,6 +17,7 @@ pub mod player_id_counter_type;
 pub mod player_profile_type;
 pub mod sequence_counter_type;
 pub mod claim_or_login_reducer;
+pub mod create_player_reducer;
 pub mod set_last_login_reducer;
 pub mod set_player_faction_reducer;
 pub mod set_player_permissions_reducer;
@@ -31,6 +32,7 @@ pub use sequence_counter_type::SequenceCounter;
 pub use player_profiles_table::*;
 pub use players_table::*;
 pub use claim_or_login_reducer::claim_or_login;
+pub use create_player_reducer::create_player;
 pub use set_last_login_reducer::set_last_login;
 pub use set_player_faction_reducer::set_player_faction;
 pub use set_player_permissions_reducer::set_player_permissions;
@@ -44,6 +46,10 @@ pub use set_player_permissions_reducer::set_player_permissions;
 
 pub enum Reducer {
         ClaimOrLogin {
+        client_time_ms: u64,
+        name: String,
+}    ,
+    CreatePlayer {
         client_time_ms: u64,
         name: String,
 }    ,
@@ -72,6 +78,7 @@ impl __sdk::Reducer for Reducer {
     fn reducer_name(&self) -> &'static str {
         match self {
                         Reducer::ClaimOrLogin { .. } => "claim_or_login",
+            Reducer::CreatePlayer { .. } => "create_player",
             Reducer::SetLastLogin { .. } => "set_last_login",
             Reducer::SetPlayerFaction { .. } => "set_player_faction",
             Reducer::SetPlayerPermissions { .. } => "set_player_permissions",
@@ -85,6 +92,13 @@ fn args_bsatn(&self) -> Result<Vec<u8>, __sats::bsatn::EncodeError> {
                 client_time_ms,
                 name,
 }             => __sats::bsatn::to_vec(&claim_or_login_reducer::ClaimOrLoginArgs {
+                client_time_ms: client_time_ms.clone(),
+                name: name.clone(),
+}),
+            Reducer::CreatePlayer{
+                client_time_ms,
+                name,
+}             => __sats::bsatn::to_vec(&create_player_reducer::CreatePlayerArgs {
                 client_time_ms: client_time_ms.clone(),
                 name: name.clone(),
 }),

@@ -9,8 +9,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use resonantdust_data::loader::{load, Bundle};
-use resonantdust_data::locales::Locales;
+use resonantdust_dsl::loader::{load, Bundle};
+use resonantdust_dsl::locales::Locales;
 
 /// Where the `.rd` corpus lives in-container (overridable via `CONTENT_DIR`).
 const CONTENT_DIR: &str = "/workspace/content/data";
@@ -64,7 +64,7 @@ impl LoadedContent {
         // this, a re-add silently replaces a def in place, breaking the
         // append-only / immutable-version contract.
         for def in def_headers(&text) {
-            let lin = resonantdust_data::loader::lineage(&def);
+            let lin = resonantdust_dsl::loader::lineage(&def);
             if self.bundle.card_head(lin).is_some() || self.bundle.recipe_head(lin).is_some() {
                 return Err(format!(
                     "add_content: lineage {lin:?} already exists — use modify_content to version it"
@@ -90,7 +90,7 @@ impl LoadedContent {
         let head = self.bundle.card_head(&lineage).ok_or_else(|| {
             format!("modify_content: no card lineage {lineage:?} (use add_content)")
         })?;
-        let next = resonantdust_data::loader::version_of(head) + 1;
+        let next = resonantdust_dsl::loader::version_of(head) + 1;
 
         let needle = format!("::{lineage}>");
         if !text.contains(&needle) {
@@ -344,8 +344,8 @@ fn content_version(sources: &[(String, String)]) -> u64 {
 /// The gate-side replacement for the cards module's old `def_aspect_total`;
 /// used to compute the blueprint builder-cap. `0` for an unknown def/aspect.
 pub fn def_aspect_total(bundle: &Bundle, name: &str, aspect: &str) -> i64 {
-    use resonantdust_data::bridge::{card_view, Card};
-    use resonantdust_data::vm::{Cell, Store};
+    use resonantdust_dsl::bridge::{card_view, Card};
+    use resonantdust_dsl::vm::{Cell, Store};
     let Some(def_id) = bundle.card_def_id(name) else {
         return 0;
     };

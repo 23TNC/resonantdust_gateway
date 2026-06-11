@@ -12,55 +12,51 @@ use spacetimedb_sdk::__codegen::{
 
 #[derive(__lib::ser::Serialize, __lib::de::Deserialize, Clone, PartialEq, Debug)]
 #[sats(crate = __lib)]
-pub(super) struct EnsureRegionArgs {
+pub(super) struct CreatePlayerArgs {
     pub client_time_ms: u64,
-    pub macro_zone: u64,
-    pub distance: u16,
+    pub name: String,
 }
 
-impl From<EnsureRegionArgs> for super::Reducer {
-    fn from(args: EnsureRegionArgs) -> Self {
-        Self::EnsureRegion {
+impl From<CreatePlayerArgs> for super::Reducer {
+    fn from(args: CreatePlayerArgs) -> Self {
+        Self::CreatePlayer {
             client_time_ms: args.client_time_ms,
-            macro_zone: args.macro_zone,
-            distance: args.distance,
+            name: args.name,
 }
 }
 }
 
-impl __sdk::InModule for EnsureRegionArgs {
+impl __sdk::InModule for CreatePlayerArgs {
     type Module = super::RemoteModule;
 }
 
 #[allow(non_camel_case_types)]
-/// Extension trait for access to the reducer `ensure_region`.
+/// Extension trait for access to the reducer `create_player`.
 ///
 /// Implemented for [`super::RemoteReducers`].
-pub trait ensure_region {
-    /// Request that the remote module invoke the reducer `ensure_region` to run as soon as possible.
+pub trait create_player {
+    /// Request that the remote module invoke the reducer `create_player` to run as soon as possible.
     ///
     /// This method returns immediately, and errors only if we are unable to send the request.
     /// The reducer will run asynchronously in the future,
     ///  and this method provides no way to listen for its completion status.
-    /// /// Use [`ensure_region:ensure_region_then`] to run a callback after the reducer completes.
-    fn ensure_region(&self, client_time_ms: u64,
-macro_zone: u64,
-distance: u16,
+    /// /// Use [`create_player:create_player_then`] to run a callback after the reducer completes.
+    fn create_player(&self, client_time_ms: u64,
+name: String,
 ) -> __sdk::Result<()> {
-        self.ensure_region_then(client_time_ms, macro_zone, distance,  |_, _| {})
+        self.create_player_then(client_time_ms, name,  |_, _| {})
     }
 
-    /// Request that the remote module invoke the reducer `ensure_region` to run as soon as possible,
+    /// Request that the remote module invoke the reducer `create_player` to run as soon as possible,
     /// registering `callback` to run when we are notified that the reducer completed.
     ///
     /// This method returns immediately, and errors only if we are unable to send the request.
     /// The reducer will run asynchronously in the future,
     ///  and its status can be observed with the `callback`.
-    fn ensure_region_then(
+    fn create_player_then(
         &self,
         client_time_ms: u64,
-macro_zone: u64,
-distance: u16,
+name: String,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
@@ -68,18 +64,17 @@ distance: u16,
     ) -> __sdk::Result<()>;
 }
 
-impl ensure_region for super::RemoteReducers {
-    fn ensure_region_then(
+impl create_player for super::RemoteReducers {
+    fn create_player_then(
         &self,
         client_time_ms: u64,
-macro_zone: u64,
-distance: u16,
+name: String,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
             + 'static,
     ) -> __sdk::Result<()> {
-        self.imp.invoke_reducer_with_callback(EnsureRegionArgs { client_time_ms, macro_zone, distance,  }, callback)
+        self.imp.invoke_reducer_with_callback(CreatePlayerArgs { client_time_ms, name,  }, callback)
     }
 }
 

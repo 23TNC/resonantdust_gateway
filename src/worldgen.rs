@@ -5,10 +5,11 @@
 //! tile bytes from the loaded DSL [`Bundle`] + shared noise; the regions
 //! `request_zone` reducer just stores them (content-agnostic).
 
-use resonantdust_data::packed::{
-    self, surface_of, unpack_macro_zone, WORLD_LAYER, ZONE_TILE_U64_COUNT,
+use resonantdust_codec::packed::{
+    set_tile_full, surface_of, tile_slot, unpack_macro_zone, world_tile, WORLD_LAYER, ZONE_SIZE,
+    ZONE_TILE_U64_COUNT,
 };
-use resonantdust_data::loader::Bundle;
+use resonantdust_dsl::loader::Bundle;
 
 /// Canonical world seed — chosen so the spawn zone, macro_zone (3,3) (world
 /// tiles 24..31, where the harness seeds souls), is entirely forest. Found by
@@ -36,28 +37,35 @@ pub fn tiles_for_zone(bundle: &Bundle, macro_zone: u64) -> Vec<u64> {
             .or_else(|| bundle.packed_def("empty"))
             .map(|p| p & 0x0FFF)
             .unwrap_or(0);
-        for r in 0..8u8 {
-            let row = [(slot, 0u8, 0u8); 8];
-            packed::set_tile_row(&mut tiles, r as usize, &row);
+        // Fill only the LOGICAL 7×7 cells; the shard's disk mask clips further.
+        for lr in 0..ZONE_SIZE {
+            for lc in 0..ZONE_SIZE {
+                set_tile_full(&mut tiles, tile_slot(lc as u8, lr as u8), slot, 0, 0);
+            }
         }
         return tiles.to_vec();
     }
 
     let (zq, zr) = unpack_macro_zone(macro_zone);
-    let base_q = zq as i32 * 8;
-    let base_r = zr as i32 * 8;
-    for r in 0..8u8 {
-        let mut row = [(0u16, 0u8, 0u8); 8];
-        for c in 0..8u8 {
-            let (def_id, [s0, s1]) = resonantdust_data::worldgen::generate_tile(
+    for lr in 0..ZONE_SIZE {
+        for lc in 0..ZONE_SIZE {
+            let (def_id, [s0, s1]) = resonantdust_dsl::worldgen::generate_tile(
                 bundle,
-                base_q + c as i32,
-                base_r + r as i32,
+                world_tile(zq, lc as u8),
+                world_tile(zr, lr as u8),
                 WORLD_SEED,
             );
-            row[c as usize] = (def_id, s0, s1);
+            set_tile_full(&mut tiles, tile_slot(lc as u8, lr as u8), def_id, s0, s1);
         }
-        packed::set_tile_row(&mut tiles, r as usize, &row);
     }
     tiles.to_vec()
+}
+
+/// The `cost` aspect of the world tile at hex `(wq, wr)` — biome (from the same
+/// `WORLD_SEED` worldgen) → tile def name → folded `cost`. `None` if no biome
+/// resolves. Used by the gate to price a `move_soul` step authoritatively.
+pub fn tile_cost_at(bundle: &Bundle, wq: i32, wr: i32) -> Option<i64> {
+    let climate = resonantdust_dsl::noise::climate_floats(wq, wr, WORLD_SEED);
+    let name = resonantdust_dsl::worldgen::select_biome(bundle, &climate)?;
+    Some(crate::content::def_aspect_total(bundle, &name, "cost"))
 }

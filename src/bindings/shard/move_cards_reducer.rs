@@ -9,83 +9,70 @@ use spacetimedb_sdk::__codegen::{
 	__ws,
 };
 
-use super::tile_point_type::TilePoint;
 
 #[derive(__lib::ser::Serialize, __lib::de::Deserialize, Clone, PartialEq, Debug)]
 #[sats(crate = __lib)]
-pub(super) struct MoveSoulArgs {
+pub(super) struct MoveCardsArgs {
     pub client_time_ms: u64,
     pub caller_player_id: u32,
-    pub soul_id: u32,
-    pub soul_def: u16,
-    pub from_q: i32,
-    pub from_r: i32,
-    pub dest: TilePoint,
-    pub depart_ms: u64,
-    pub arrival_ms: u64,
+    pub card_ids: Vec::<u32>,
+    pub macro_zones: Vec::<u64>,
+    pub micro_locations: Vec::<u32>,
+    pub stack_states: Vec::<u8>,
 }
 
-impl From<MoveSoulArgs> for super::Reducer {
-    fn from(args: MoveSoulArgs) -> Self {
-        Self::MoveSoul {
+impl From<MoveCardsArgs> for super::Reducer {
+    fn from(args: MoveCardsArgs) -> Self {
+        Self::MoveCards {
             client_time_ms: args.client_time_ms,
             caller_player_id: args.caller_player_id,
-            soul_id: args.soul_id,
-            soul_def: args.soul_def,
-            from_q: args.from_q,
-            from_r: args.from_r,
-            dest: args.dest,
-            depart_ms: args.depart_ms,
-            arrival_ms: args.arrival_ms,
+            card_ids: args.card_ids,
+            macro_zones: args.macro_zones,
+            micro_locations: args.micro_locations,
+            stack_states: args.stack_states,
 }
 }
 }
 
-impl __sdk::InModule for MoveSoulArgs {
+impl __sdk::InModule for MoveCardsArgs {
     type Module = super::RemoteModule;
 }
 
 #[allow(non_camel_case_types)]
-/// Extension trait for access to the reducer `move_soul`.
+/// Extension trait for access to the reducer `move_cards`.
 ///
 /// Implemented for [`super::RemoteReducers`].
-pub trait move_soul {
-    /// Request that the remote module invoke the reducer `move_soul` to run as soon as possible.
+pub trait move_cards {
+    /// Request that the remote module invoke the reducer `move_cards` to run as soon as possible.
     ///
     /// This method returns immediately, and errors only if we are unable to send the request.
     /// The reducer will run asynchronously in the future,
     ///  and this method provides no way to listen for its completion status.
-    /// /// Use [`move_soul:move_soul_then`] to run a callback after the reducer completes.
-    fn move_soul(&self, client_time_ms: u64,
+    /// /// Use [`move_cards:move_cards_then`] to run a callback after the reducer completes.
+    fn move_cards(&self, client_time_ms: u64,
 caller_player_id: u32,
-soul_id: u32,
-soul_def: u16,
-from_q: i32,
-from_r: i32,
-dest: TilePoint,
-depart_ms: u64,
-arrival_ms: u64,
+card_ids: Vec::<u32>,
+macro_zones: Vec::<u64>,
+micro_locations: Vec::<u32>,
+stack_states: Vec::<u8>,
 ) -> __sdk::Result<()> {
-        self.move_soul_then(client_time_ms, caller_player_id, soul_id, soul_def, from_q, from_r, dest, depart_ms, arrival_ms,  |_, _| {})
+        self.move_cards_then(client_time_ms, caller_player_id, card_ids, macro_zones, micro_locations, stack_states,  |_, _| {})
     }
 
-    /// Request that the remote module invoke the reducer `move_soul` to run as soon as possible,
+    /// Request that the remote module invoke the reducer `move_cards` to run as soon as possible,
     /// registering `callback` to run when we are notified that the reducer completed.
     ///
     /// This method returns immediately, and errors only if we are unable to send the request.
     /// The reducer will run asynchronously in the future,
     ///  and its status can be observed with the `callback`.
-    fn move_soul_then(
+    fn move_cards_then(
         &self,
         client_time_ms: u64,
 caller_player_id: u32,
-soul_id: u32,
-soul_def: u16,
-from_q: i32,
-from_r: i32,
-dest: TilePoint,
-depart_ms: u64,
-arrival_ms: u64,
+card_ids: Vec::<u32>,
+macro_zones: Vec::<u64>,
+micro_locations: Vec::<u32>,
+stack_states: Vec::<u8>,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
@@ -93,24 +80,21 @@ arrival_ms: u64,
     ) -> __sdk::Result<()>;
 }
 
-impl move_soul for super::RemoteReducers {
-    fn move_soul_then(
+impl move_cards for super::RemoteReducers {
+    fn move_cards_then(
         &self,
         client_time_ms: u64,
 caller_player_id: u32,
-soul_id: u32,
-soul_def: u16,
-from_q: i32,
-from_r: i32,
-dest: TilePoint,
-depart_ms: u64,
-arrival_ms: u64,
+card_ids: Vec::<u32>,
+macro_zones: Vec::<u64>,
+micro_locations: Vec::<u32>,
+stack_states: Vec::<u8>,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
             + 'static,
     ) -> __sdk::Result<()> {
-        self.imp.invoke_reducer_with_callback(MoveSoulArgs { client_time_ms, caller_player_id, soul_id, soul_def, from_q, from_r, dest, depart_ms, arrival_ms,  }, callback)
+        self.imp.invoke_reducer_with_callback(MoveCardsArgs { client_time_ms, caller_player_id, card_ids, macro_zones, micro_locations, stack_states,  }, callback)
     }
 }
 

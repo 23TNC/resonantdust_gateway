@@ -1,5 +1,5 @@
 //! `CardStore` adapter — wires the storage-agnostic core
-//! (`resonantdust_data::recipe_state`) to the gate's [`Snapshot`] so
+//! (`resonantdust_state::recipe_state`) to the gate's [`Snapshot`] so
 //! `validate_bindings` (ownership / not-dead / holds / dedup state checks) can
 //! read cards. The snapshot already holds the latest version per card, so
 //! [`CardStore::card_at`] ignores `time_ms` and returns it directly.
@@ -8,9 +8,9 @@
 //! glue (`resonantdust_rules::dsl_recipe`); only the state-validation adapter
 //! remains here.
 
-use resonantdust_data::card_model::{micro_is_card, Micro};
-use resonantdust_data::recipe_state::{CardStore, CardView};
-use resonantdust_data::stack::StackStore;
+use resonantdust_codec::card_model::{micro_is_card, Micro};
+use resonantdust_state::recipe_state::{CardStore, CardView};
+use resonantdust_state::stack::StackStore;
 
 use crate::gather::Snapshot;
 
@@ -36,7 +36,7 @@ impl StackStore for Snapshot {
     /// Members of `root_id` in the gathered snapshot: cards whose `micro_location`
     /// points at the root and are stack members (`micro_is_card`). The snapshot
     /// holds the latest row per card, so `now_ms` is immaterial. Lets the shared
-    /// [`resonantdust_data::stack::plan_splice`] run over the gate's snapshot.
+    /// [`resonantdust_state::stack::plan_splice`] run over the gate's snapshot.
     fn members_of(&self, root_id: u32, _now_ms: u64) -> Vec<CardView> {
         self.cards
             .values()

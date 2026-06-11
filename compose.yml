@@ -80,9 +80,9 @@ services:
       # `path = "content"` dep resolves it (mirrors how the spacetime
       # modules mount ../content into their crate dirs).
       - ../content:/workspace/content
-      # The shared workspace (codec/dsl/state/protocol + the resonantdust-data
-      # facade), mounted whole so the facade's sibling path-deps resolve.
-      # gateway/Cargo.toml depends on `path = "shared/data"`.
+      # The vendored shared workspace (codec/dsl/state/protocol/rules), mounted
+      # whole so the member crates' sibling path-deps resolve. gateway/Cargo.toml
+      # depends on `path = "shared/codec"`, `shared/dsl`, etc.
       - ../shared:/workspace/shared
     working_dir: /workspace
     # spacetimedb-lib's build script shells out to `git rev-parse HEAD` to

@@ -19,8 +19,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use resonantdust_data::card_model;
-use resonantdust_data::packed::{
+use resonantdust_codec::card_model;
+use resonantdust_codec::packed::{
     micro_loose_cell, pack_definition, tile_full, unpack_definition, unpack_zone_definition,
     valid_at_time,
 };
@@ -352,14 +352,14 @@ pub fn synthetic_tile(snap: &Snapshot, micro_location: u32) -> Option<(u16, (u8,
     }
     let zone = snap.zone.as_ref()?;
     let (q, r) = micro_loose_cell(micro_location);
-    if q >= 8 || r >= 8 {
+    if q >= 7 || r >= 7 {
         return None;
     }
     let tiles = [
         zone.t_0, zone.t_1, zone.t_2, zone.t_3, zone.t_4, zone.t_5, zone.t_6, zone.t_7, zone.t_8,
-        zone.t_9, zone.t_10, zone.t_11, zone.t_12, zone.t_13, zone.t_14, zone.t_15,
+        zone.t_9, zone.t_10, zone.t_11, zone.t_12,
     ];
-    let (def_id, stock0, stock1) = tile_full(&tiles, (r as usize) * 8 + q as usize);
+    let (def_id, stock0, stock1) = tile_full(&tiles, resonantdust_codec::packed::tile_slot(q, r));
     if def_id == 0 {
         return None;
     }
@@ -381,6 +381,44 @@ fn latest_cards(conn: &bindings::shard::DbConnection) -> Vec<bindings::shard::Ca
         }
     }
     latest.into_values().collect()
+}
+
+/// One-shot read of a card's `packed_definition` (subscribe → read → tear down),
+/// for resolving an owner's aspects gate-side outside a full gather.
+async fn fetch_card_def(pool: &Pool, card_id: u32) -> Option<u16> {
+    let conn = pool.cards(routing::card_shard(card_id))?;
+    let handle = cards_sub(&conn, vec![format!("SELECT * FROM cards WHERE card_id = {card_id}")])
+        .await
+        .ok()?;
+    let def = latest_cards(&conn)
+        .into_iter()
+        .find(|c| c.card_id == card_id)
+        .map(|c| c.packed_definition);
+    let _ = handle.unsubscribe();
+    def
+}
+
+/// Disk radius (tiles) for a region's `ensure_region`: `u16::MAX` on the world
+/// surface (effectively unbounded), else the owner card's `inventory` aspect
+/// minus one (a container's tile-ring count). Reads the owner card once; a
+/// container that can't be resolved falls back to 0 (a single home tile).
+pub async fn region_distance(pool: &Pool, macro_zone: u64) -> u16 {
+    use resonantdust_codec::packed::{owner_of, surface_of, WORLD_LAYER};
+    if surface_of(macro_zone) == WORLD_LAYER {
+        return u16::MAX;
+    }
+    let owner = owner_of(macro_zone);
+    if owner == 0 {
+        return u16::MAX;
+    }
+    let bundle = pool.content();
+    match fetch_card_def(pool, owner).await {
+        Some(def) => {
+            let cap = resonantdust_dsl::defs::aspect_value(&bundle, def, "inventory").unwrap_or(1);
+            (cap.max(1) - 1).clamp(0, u16::MAX as i64) as u16
+        }
+        None => 0,
+    }
 }
 
 fn latest_zone(conn: &bindings::shard::DbConnection, macro_zone: u64) -> Option<bindings::shard::Zone> {

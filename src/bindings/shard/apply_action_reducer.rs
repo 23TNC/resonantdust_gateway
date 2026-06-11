@@ -22,6 +22,8 @@ pub(super) struct ApplyActionArgs {
     pub create_surfaces: Vec::<u8>,
     pub create_macro_zones: Vec::<u64>,
     pub create_owners: Vec::<u32>,
+    pub create_distances: Vec::<u16>,
+    pub create_stocks: Vec::<u32>,
     pub unlock_targets: Vec::<u32>,
     pub unlock_blueprints: Vec::<u16>,
     pub stat_souls: Vec::<u32>,
@@ -30,6 +32,10 @@ pub(super) struct ApplyActionArgs {
     pub stat_deltas: Vec::<i8>,
     pub stock_card_ids: Vec::<u32>,
     pub stock_values: Vec::<u32>,
+    pub reroot_ids: Vec::<u32>,
+    pub reroot_macro_zones: Vec::<u64>,
+    pub reroot_micro_locations: Vec::<u32>,
+    pub reroot_stack_states: Vec::<u8>,
 }
 
 impl From<ApplyActionArgs> for super::Reducer {
@@ -44,6 +50,8 @@ impl From<ApplyActionArgs> for super::Reducer {
             create_surfaces: args.create_surfaces,
             create_macro_zones: args.create_macro_zones,
             create_owners: args.create_owners,
+            create_distances: args.create_distances,
+            create_stocks: args.create_stocks,
             unlock_targets: args.unlock_targets,
             unlock_blueprints: args.unlock_blueprints,
             stat_souls: args.stat_souls,
@@ -52,6 +60,10 @@ impl From<ApplyActionArgs> for super::Reducer {
             stat_deltas: args.stat_deltas,
             stock_card_ids: args.stock_card_ids,
             stock_values: args.stock_values,
+            reroot_ids: args.reroot_ids,
+            reroot_macro_zones: args.reroot_macro_zones,
+            reroot_micro_locations: args.reroot_micro_locations,
+            reroot_stack_states: args.reroot_stack_states,
 }
 }
 }
@@ -80,6 +92,8 @@ create_defs: Vec::<u16>,
 create_surfaces: Vec::<u8>,
 create_macro_zones: Vec::<u64>,
 create_owners: Vec::<u32>,
+create_distances: Vec::<u16>,
+create_stocks: Vec::<u32>,
 unlock_targets: Vec::<u32>,
 unlock_blueprints: Vec::<u16>,
 stat_souls: Vec::<u32>,
@@ -88,8 +102,12 @@ stat_bytes: Vec::<u8>,
 stat_deltas: Vec::<i8>,
 stock_card_ids: Vec::<u32>,
 stock_values: Vec::<u32>,
+reroot_ids: Vec::<u32>,
+reroot_macro_zones: Vec::<u64>,
+reroot_micro_locations: Vec::<u32>,
+reroot_stack_states: Vec::<u8>,
 ) -> __sdk::Result<()> {
-        self.apply_action_then(now_ms, completion_ms, bound_ids, bound_masks, destroy_ids, create_defs, create_surfaces, create_macro_zones, create_owners, unlock_targets, unlock_blueprints, stat_souls, stat_fields, stat_bytes, stat_deltas, stock_card_ids, stock_values,  |_, _| {})
+        self.apply_action_then(now_ms, completion_ms, bound_ids, bound_masks, destroy_ids, create_defs, create_surfaces, create_macro_zones, create_owners, create_distances, create_stocks, unlock_targets, unlock_blueprints, stat_souls, stat_fields, stat_bytes, stat_deltas, stock_card_ids, stock_values, reroot_ids, reroot_macro_zones, reroot_micro_locations, reroot_stack_states,  |_, _| {})
     }
 
     /// Request that the remote module invoke the reducer `apply_action` to run as soon as possible,
@@ -109,6 +127,8 @@ create_defs: Vec::<u16>,
 create_surfaces: Vec::<u8>,
 create_macro_zones: Vec::<u64>,
 create_owners: Vec::<u32>,
+create_distances: Vec::<u16>,
+create_stocks: Vec::<u32>,
 unlock_targets: Vec::<u32>,
 unlock_blueprints: Vec::<u16>,
 stat_souls: Vec::<u32>,
@@ -117,6 +137,10 @@ stat_bytes: Vec::<u8>,
 stat_deltas: Vec::<i8>,
 stock_card_ids: Vec::<u32>,
 stock_values: Vec::<u32>,
+reroot_ids: Vec::<u32>,
+reroot_macro_zones: Vec::<u64>,
+reroot_micro_locations: Vec::<u32>,
+reroot_stack_states: Vec::<u8>,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
@@ -136,6 +160,8 @@ create_defs: Vec::<u16>,
 create_surfaces: Vec::<u8>,
 create_macro_zones: Vec::<u64>,
 create_owners: Vec::<u32>,
+create_distances: Vec::<u16>,
+create_stocks: Vec::<u32>,
 unlock_targets: Vec::<u32>,
 unlock_blueprints: Vec::<u16>,
 stat_souls: Vec::<u32>,
@@ -144,12 +170,16 @@ stat_bytes: Vec::<u8>,
 stat_deltas: Vec::<i8>,
 stock_card_ids: Vec::<u32>,
 stock_values: Vec::<u32>,
+reroot_ids: Vec::<u32>,
+reroot_macro_zones: Vec::<u64>,
+reroot_micro_locations: Vec::<u32>,
+reroot_stack_states: Vec::<u8>,
 
         callback: impl FnOnce(&super::ReducerEventContext, Result<Result<(), String>, __sdk::InternalError>)
             + Send
             + 'static,
     ) -> __sdk::Result<()> {
-        self.imp.invoke_reducer_with_callback(ApplyActionArgs { now_ms, completion_ms, bound_ids, bound_masks, destroy_ids, create_defs, create_surfaces, create_macro_zones, create_owners, unlock_targets, unlock_blueprints, stat_souls, stat_fields, stat_bytes, stat_deltas, stock_card_ids, stock_values,  }, callback)
+        self.imp.invoke_reducer_with_callback(ApplyActionArgs { now_ms, completion_ms, bound_ids, bound_masks, destroy_ids, create_defs, create_surfaces, create_macro_zones, create_owners, create_distances, create_stocks, unlock_targets, unlock_blueprints, stat_souls, stat_fields, stat_bytes, stat_deltas, stock_card_ids, stock_values, reroot_ids, reroot_macro_zones, reroot_micro_locations, reroot_stack_states,  }, callback)
     }
 }
 

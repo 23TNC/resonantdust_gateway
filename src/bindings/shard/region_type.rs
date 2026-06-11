@@ -17,6 +17,7 @@ pub struct Region {
     pub macro_region: u64,
     pub zone_presence: u64,
     pub zone_available: u64,
+    pub distance: u16,
 }
 
 
@@ -33,6 +34,7 @@ pub struct RegionCols {
     pub macro_region: __sdk::__query_builder::Col<Region, u64>,
     pub zone_presence: __sdk::__query_builder::Col<Region, u64>,
     pub zone_available: __sdk::__query_builder::Col<Region, u64>,
+    pub distance: __sdk::__query_builder::Col<Region, u16>,
 }
 
 impl __sdk::__query_builder::HasCols for Region {
@@ -43,6 +45,7 @@ impl __sdk::__query_builder::HasCols for Region {
             macro_region: __sdk::__query_builder::Col::new(table_name, "macro_region"),
             zone_presence: __sdk::__query_builder::Col::new(table_name, "zone_presence"),
             zone_available: __sdk::__query_builder::Col::new(table_name, "zone_available"),
+            distance: __sdk::__query_builder::Col::new(table_name, "distance"),
 
         }
     }

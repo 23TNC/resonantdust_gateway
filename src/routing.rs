@@ -2,7 +2,7 @@
 //! wrappers over the shared `content` bit-packing so the gate and the
 //! SpacetimeDB modules agree on the encoding by construction.
 
-use resonantdust_data::packed;
+use resonantdust_codec::packed;
 
 /// The shard that owns `card_id` WITHIN its database (0..2047, the 11-bit shard
 /// field). Pair with `packed::card_db_of` to route.
@@ -19,7 +19,7 @@ pub fn region_of_zone(macro_zone: u64) -> (u64, u8) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use resonantdust_data::packed::{card_db_of, pack_card_id, CARD_DB_CARDS, CARD_DB_REGIONS};
+    use resonantdust_codec::packed::{card_db_of, pack_card_id, CARD_DB_CARDS, CARD_DB_REGIONS};
 
     #[test]
     fn card_routing_reads_id() {

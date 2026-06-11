@@ -27,7 +27,7 @@ use tracing::{debug, info, info_span, warn, Instrument};
 
 use crate::bindings;
 use crate::connections::Pool;
-use resonantdust_data::protocol::{now_micros, ClientMsg, GateMsg, RowOp};
+use resonantdust_protocol::protocol::{now_micros, ClientMsg, GateMsg, RowOp};
 
 /// How long a connection may be silent before the gate sends a standalone clock
 /// keepalive. Active clients sync via the `call_ok`/`call_err` piggyback, so this
@@ -826,6 +826,22 @@ async fn relay_call(
             }
         }
     }
+    // ensure_region: the region's disk `distance` is owner-derived (a container's
+    // `inventory` aspect) — the shard can't see cards, so the gate resolves it
+    // once here (u16::MAX for the world) and injects it. The shard then bounds the
+    // whole region (presence + tile mask) by this single value.
+    if reducer == "ensure_region" {
+        if let Some(obj) = args.as_object_mut() {
+            let macro_zone = obj
+                .get("macro_zone")
+                .or_else(|| obj.get("macroZone"))
+                .and_then(serde_json::Value::as_u64);
+            if let Some(mz) = macro_zone {
+                let distance = crate::gather::region_distance(pool, mz).await;
+                obj.insert("distance".to_string(), serde_json::json!(distance));
+            }
+        }
+    }
     // create_card: the single generic card-mint primitive. Resolve the content
     // name (`card_key`, e.g. "player_soul" / "human" / "corpus") → packed def
     // gate-side; the (content-agnostic) cards reducer takes `packed_definition`.
@@ -836,11 +852,18 @@ async fn relay_call(
                 let packed = bundle.packed_def(&key).unwrap_or(0);
                 // Seed the new card's per-instance stock u32 from its `@define`
                 // stock defaults (the content-agnostic shard can't derive these).
-                let stock = resonantdust_data::bridge::stock_default_u32(&bundle, &key);
+                let stock = resonantdust_dsl::bridge::stock_default_u32(&bundle, &key);
                 obj.remove("card_key");
                 obj.insert("packed_definition".to_string(), serde_json::json!(packed));
                 obj.insert("stock".to_string(), serde_json::json!(stock));
             }
+            // Disk radius of the destination container, so default placement
+            // (`first_free_cell`) only picks cells that exist in the region disk.
+            let owner = obj.get("owner_id").and_then(serde_json::Value::as_u64).unwrap_or(0) as u32;
+            let surface = obj.get("surface").and_then(serde_json::Value::as_u64).unwrap_or(0) as u8;
+            let mz = resonantdust_codec::packed::pack_macro_zone_full(owner, surface, 0, 0);
+            let distance = crate::gather::region_distance(pool, mz).await;
+            obj.insert("distance".to_string(), serde_json::json!(distance));
         }
     }
     // request_blueprint: the gate computes the builder cap (the soul def's folded
@@ -877,6 +900,58 @@ async fn relay_call(
                     "set_last_login: no session (not logged in)".to_string(),
                 ));
                 return;
+            }
+        }
+    }
+    // move_soul: the gate owns the CONTENT-derived timing. Re-derive `arrival_ms`
+    // from the soul's `speed` (`soul_def`) and the `from`/`dest` tile `cost`s
+    // (worldgen), validate hex-adjacency, and OVERRIDE the client's `arrival_ms`.
+    // The shard separately verifies `soul_def` + the soul's real cell at
+    // `depart_ms` == `from`, so a spoofed input just gets the move rejected there.
+    if reducer == "move_soul" {
+        let bundle = pool.content();
+        let g = |k: &str| args.get(k).and_then(serde_json::Value::as_i64);
+        let soul_def = args.get("soul_def").and_then(serde_json::Value::as_u64).unwrap_or(0) as u16;
+        let (from_q, from_r) = (g("from_q").unwrap_or(0) as i32, g("from_r").unwrap_or(0) as i32);
+        let depart_ms = args.get("depart_ms").and_then(serde_json::Value::as_u64).unwrap_or(0);
+        let dest_macro = args
+            .get("dest")
+            .and_then(|d| d.get("macro_zone"))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let dest_micro = args
+            .get("dest")
+            .and_then(|d| d.get("micro_location"))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0) as u32;
+        let (dq, dr) = {
+            use resonantdust_codec::packed::{unpack_macro_zone, unpack_micro_loose, world_tile};
+            let (zq, zr) = unpack_macro_zone(dest_macro);
+            let (lq, lr, _, _) = unpack_micro_loose(dest_micro);
+            (world_tile(zq, lq), world_tile(zr, lr))
+        };
+        let reject = |msg: String| {
+            let _ = tx.send(GateMsg::call_err(cid, format!("move_soul: {msg}")));
+        };
+        let adjacent =
+            matches!((dq - from_q, dr - from_r), (1, 0) | (-1, 0) | (0, 1) | (0, -1) | (1, -1) | (-1, 1));
+        let speed = resonantdust_dsl::defs::aspect_value(&bundle, soul_def, "speed").unwrap_or(0);
+        match (
+            adjacent,
+            speed,
+            crate::worldgen::tile_cost_at(&bundle, from_q, from_r),
+            crate::worldgen::tile_cost_at(&bundle, dq, dr),
+        ) {
+            (false, ..) => return reject(format!("dest ({dq},{dr}) not adjacent to from ({from_q},{from_r})")),
+            (_, s, ..) if s <= 0 => return reject(format!("def {soul_def} has no speed (not a mover)")),
+            (_, _, None, _) | (_, _, _, None) => {
+                return reject("no tile cost for from/dest cell".to_string())
+            }
+            (true, speed, Some(cf), Some(cd)) => {
+                let travel = (((cf + cd) * 1000) / (2 * speed)).max(1) as u64;
+                if let Some(obj) = args.as_object_mut() {
+                    obj.insert("arrival_ms".to_string(), serde_json::json!(depart_ms + travel));
+                }
             }
         }
     }

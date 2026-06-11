@@ -184,7 +184,7 @@ impl Pool {
     /// A snapshot of the current content bundle (the VM + defs the recipe
     /// pipeline runs). Cheap `Arc` clone; hold it for the duration of an action
     /// so the whole operation sees one consistent content version.
-    pub fn content(&self) -> Arc<resonantdust_data::loader::Bundle> {
+    pub fn content(&self) -> Arc<resonantdust_dsl::loader::Bundle> {
         self.content.read().unwrap().bundle.clone()
     }
 

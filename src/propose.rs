@@ -14,13 +14,13 @@ use serde_json::Value;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, warn};
 
-use resonantdust_data::recipe_state::validate_bindings;
+use resonantdust_state::recipe_state::validate_bindings;
 
 use crate::apply;
 use crate::connections::Pool;
 use crate::gather::{gather, synthetic_tile, Proposal};
 use resonantdust_rules::dsl_recipe;
-use resonantdust_data::protocol::GateMsg;
+use resonantdust_protocol::protocol::GateMsg;
 
 /// Handle a `propose_action` call: run the pipeline and reply CallOk/CallErr.
 pub async fn handle(pool: &Arc<Pool>, tx: &UnboundedSender<String>, cid: u32, args: Value) {
