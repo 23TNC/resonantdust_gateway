@@ -712,7 +712,7 @@ async fn add_content(
         require_content_author(upstream_players, session).await?;
         let name = arg_str(&args, "name")?;
         let text = arg_str(&args, "text")?;
-        pool.add_content(name, text)
+        pool.add_content(name, text).await
     }
     .await;
     reply_content(pool, tx, cid, "add_content", result);
@@ -733,7 +733,7 @@ async fn modify_content(
         require_content_author(upstream_players, session).await?;
         let lineage = arg_str(&args, "lineage")?;
         let text = arg_str(&args, "text")?;
-        pool.modify_content(lineage, text)
+        pool.modify_content(lineage, text).await
     }
     .await;
     reply_content(pool, tx, cid, "modify_content", result);

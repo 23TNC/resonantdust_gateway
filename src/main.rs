@@ -12,6 +12,7 @@ mod content;
 mod gather;
 mod propose;
 mod routing;
+mod s3;
 mod validation;
 mod worldgen;
 mod ws;
@@ -44,21 +45,35 @@ async fn main() {
     // Load the DSL content (the runtime recipe engine + the corpus served to
     // clients) before serving. Topology:
     //   • authority (`GATE_CONTENT_AUTHORITY` unset) — owns the canonical corpus,
-    //     serves `/content`, accepts add/modify. It reads that corpus either from
-    //     local disk (default) or, if `CONTENT_BASE_URL` is set, from a public
-    //     object store (R2) via a manifest — so content can be updated by
-    //     uploading to the bucket.
+    //     serves `/content`, accepts add/modify. It reads that corpus from local
+    //     disk (default), a public object store over HTTP (`CONTENT_BASE_URL`), or
+    //     — when R2 write creds are set — the S3 API (so authoring writes back to
+    //     the same strongly-consistent bucket: the unified store).
     //   • peer (`GATE_CONTENT_AUTHORITY=<url>`) — fetches `/content` from the
     //     authority at startup and polls `<url>/content-version` for changes,
     //     mirroring the corpus in memory. Authoring is rejected on peers.
     // Propagation is HTTP authority→peer→client; SpacetimeDB stays game-only.
     let authority = cfg.content_authority.clone();
-    let content_base_url = cfg.content_base_url.clone();
+    // S3 store for an authoring authority (write creds set). When present it is
+    // ALSO the read/poll source — strongly consistent, so the gate's own poll
+    // reads back exactly what it authored (no public-CDN revert race).
+    let r2_store = s3::R2Store::from_env().map(Arc::new);
+    // The authority's read source: S3 if authoring, else the public HTTP base, else
+    // None (disk). `r2_store` is cloned in so it can also serve writes via the Pool.
+    let content_src = match (&r2_store, &cfg.content_base_url) {
+        (Some(store), _) => Some(content::ContentSrc::S3(store.clone())),
+        (None, Some(base)) => Some(content::ContentSrc::Http(base.clone())),
+        (None, None) => None,
+    };
     let content = match &authority {
-        None => match &content_base_url {
-            Some(base) => {
-                tracing::info!(%base, "content: authority (R2-backed)");
-                load_r2_content(base).await
+        None => match &content_src {
+            Some(src) => {
+                let kind = match src {
+                    content::ContentSrc::S3(_) => "S3 R2",
+                    content::ContentSrc::Http(_) => "HTTP R2",
+                };
+                tracing::info!(kind, "content: authority (object-store-backed)");
+                load_src_with_retry(src).await
             }
             None => {
                 tracing::info!("content: authority (disk-backed)");
@@ -70,15 +85,16 @@ async fn main() {
             fetch_authority_content(url).await
         }
     };
-    let pool = Arc::new(connections::Pool::new(cfg, content));
+    let pool = Arc::new(connections::Pool::new(cfg, content, r2_store));
 
     // A peer keeps its in-memory corpus in sync by polling the authority. An
-    // R2-backed authority keeps ITS corpus in sync by polling the bucket — so an
-    // upload propagates authority→peer→client with no restart.
+    // object-store-backed authority keeps ITS corpus in sync by polling the store —
+    // so an upload (or its own authoring) propagates authority→peer→client with no
+    // restart.
     if authority.is_some() {
         spawn_content_poll(pool.clone());
-    } else if let Some(base) = content_base_url {
-        spawn_r2_content_poll(pool.clone(), base);
+    } else if let Some(src) = content_src {
+        spawn_content_poll_src(pool.clone(), src);
     }
 
     let app = Router::new()
@@ -121,44 +137,41 @@ async fn health() -> &'static str {
     "ok"
 }
 
-/// Load + build the base corpus from R2/HTTP — an **authority** gate's
-/// `CONTENT_BASE_URL` startup load. Retries on a fixed backoff so a transient
-/// network blip (or a bucket still being populated) doesn't kill the gate; exits
-/// the process if the load keeps failing (an authority with no corpus can't serve
-/// clients). A *load* failure (bad/missing manifest, 404, parse error) is fatal
-/// just like the disk path's panic — broken content must not reach clients.
-async fn load_r2_content(base: &str) -> content::LoadedContent {
+/// Load + build the base corpus from an object store — an **authority** gate's
+/// startup load over a [`content::ContentSrc`] (HTTP or S3). Retries on a fixed
+/// backoff so a transient blip (or a bucket still being populated) doesn't kill
+/// the gate; exits the process if the load keeps failing (an authority with no
+/// corpus can't serve clients). A *load* failure (bad/missing manifest, 404,
+/// parse error) is fatal just like the disk path's panic — broken content must
+/// not reach clients.
+async fn load_src_with_retry(src: &content::ContentSrc) -> content::LoadedContent {
     for attempt in 1..=15u32 {
-        match content::load_content_r2(base).await {
+        match content::load_content_src(src).await {
             Ok(c) => {
                 tracing::info!(
-                    %base,
                     files = c.sources.len(),
                     locale_domains = c.locales.len(),
                     version = %format!("{:016x}", c.version),
-                    "content: loaded from R2"
+                    "content: loaded from object store"
                 );
                 return c;
             }
-            Err(e) => {
-                tracing::warn!(%base, attempt, error = %e, "content: R2 load failed, retrying")
-            }
+            Err(e) => tracing::warn!(attempt, error = %e, "content: store load failed, retrying"),
         }
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     }
-    tracing::error!(%base, "content: R2 load failed after retries; exiting");
+    tracing::error!("content: store load failed after retries; exiting");
     std::process::exit(1);
 }
 
-/// Spawn the R2 re-poll loop — an **R2-backed authority**'s live-update path.
-/// Every `CONTENT_POLL_SECS` (default 10) it re-fetches the bucket corpus; on a
-/// fingerprint change it revalidates, hot-swaps the live corpus, and broadcasts
-/// `content_changed` to this gate's clients. Peers of this authority see the new
+/// Spawn the object-store re-poll loop — an **object-store-backed authority**'s
+/// live-update path. Every `CONTENT_POLL_SECS` (default 10) it re-fetches the
+/// corpus; on a fingerprint change it revalidates, hot-swaps the live corpus, and
+/// broadcasts `content_changed` to this gate's clients. Peers see the new
 /// `/content-version` on their own poll and mirror it. A bad fetch/parse leaves
 /// live content untouched (a broken upload never reaches clients). This is the
 /// authority analog of [`spawn_content_poll`] (which mirrors an upstream gate).
-fn spawn_r2_content_poll(pool: Arc<connections::Pool>, base: String) {
-    let base = base.trim_end_matches('/').to_string();
+fn spawn_content_poll_src(pool: Arc<connections::Pool>, src: content::ContentSrc) {
     let secs = std::env::var("CONTENT_POLL_SECS")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
@@ -168,15 +181,15 @@ fn spawn_r2_content_poll(pool: Arc<connections::Pool>, base: String) {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(secs));
         loop {
             tick.tick().await;
-            match content::poll_r2_content(&base, pool.content_version_num()).await {
+            match content::poll_content_src(&src, pool.content_version_num()).await {
                 Ok(Some(next)) => {
                     pool.swap_content(next);
                     let version = pool.content_version_hex();
-                    tracing::info!(%version, "authority: content updated from R2");
+                    tracing::info!(%version, "authority: content updated from store");
                     pool.broadcast(resonantdust_protocol::protocol::GateMsg::content_changed(version));
                 }
                 Ok(None) => {} // unchanged — the common case
-                Err(e) => tracing::warn!(%base, error = %e, "authority: R2 poll failed"),
+                Err(e) => tracing::warn!(error = %e, "authority: store poll failed"),
             }
         }
     });

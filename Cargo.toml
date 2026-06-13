@@ -23,6 +23,13 @@ spacetimedb-sats = "2.3"
 # fetch the content corpus from an authority peer (http) or an R2 bucket (https).
 # rustls-tls is the self-contained TLS backend (no system openssl in the image).
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# S3-compatible writes (R2/MinIO) for runtime content authoring — hand-rolled
+# SigV4 over reqwest+rustls, so no aws-sdk (its aws-lc-sys needs a C toolchain the
+# rust:slim build image lacks). These are pure-Rust and tiny.
+sha2 = "0.10"
+hmac = "0.12"
+hex = "0.4"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 # Upstream client to the SpacetimeDB shards. Must match the generator that
 # produced src/bindings/ (spacetime cli 2.3.0).
 spacetimedb-sdk = "2.3"

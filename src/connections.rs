@@ -122,10 +122,18 @@ pub struct Pool {
     /// players with refcount > 0`. The gate pushes changes to the `zone_observers`
     /// table; clients gate move-sync on it (commit-based position, Phase 2).
     observers: Mutex<HashMap<u64, HashMap<u32, u32>>>,
+    /// The S3 store for an **authoring authority** that keeps its canonical corpus
+    /// in R2 — `Some` when R2 write creds are configured. Authored sources are
+    /// written here (so they're durable + propagate); `None` → persist to disk.
+    r2_store: Option<Arc<crate::s3::R2Store>>,
 }
 
 impl Pool {
-    pub fn new(cfg: GateConfig, content: crate::content::LoadedContent) -> Self {
+    pub fn new(
+        cfg: GateConfig,
+        content: crate::content::LoadedContent,
+        r2_store: Option<Arc<crate::s3::R2Store>>,
+    ) -> Self {
         Self {
             cfg,
             content: RwLock::new(Arc::new(content)),
@@ -134,6 +142,7 @@ impl Pool {
             regions_index: Mutex::new(None),
             clients: Mutex::new(Vec::new()),
             observers: Mutex::new(HashMap::new()),
+            r2_store,
         }
     }
 
@@ -206,33 +215,40 @@ impl Pool {
     }
 
     /// Add a new `.rd` source `(name, text)` to the live content, validating the
-    /// merged corpus and hot-swapping it on success. Returns the new version
-    /// fingerprint (hex). On `Err` the live content is untouched (validation
-    /// runs against a candidate before the swap). `name` must not already be
-    /// present — an in-place change is `modify_content`.
-    pub fn add_content(&self, name: String, text: String) -> Result<String, String> {
+    /// merged corpus, persisting it (R2 or disk), and hot-swapping it on success.
+    /// Returns the new version fingerprint (hex). On `Err` the live content is
+    /// untouched (validation + persist run against a candidate before the swap).
+    /// `name` must not already be present — an in-place change is `modify_content`.
+    pub async fn add_content(&self, name: String, text: String) -> Result<String, String> {
         // Validate against a snapshot WITHOUT holding the write lock (load can be
         // non-trivial; readers must not block on it).
         let current = self.content.read().unwrap().clone();
         let next = current.with_added_source(name, text)?;
-        self.persist_and_swap(next)
+        self.persist_and_swap(next).await
     }
 
     /// Append a new **version** of an existing card `lineage` (the gate assigns
-    /// the version number), validating + hot-swapping on success. Same lock
-    /// discipline as [`add_content`]. Returns the new version fingerprint (hex).
-    pub fn modify_content(&self, lineage: String, text: String) -> Result<String, String> {
+    /// the version number), validating + persisting + hot-swapping on success.
+    /// Same lock discipline as [`add_content`]. Returns the new version (hex).
+    pub async fn modify_content(&self, lineage: String, text: String) -> Result<String, String> {
         let current = self.content.read().unwrap().clone();
         let next = current.with_modified_source(lineage, text)?;
-        self.persist_and_swap(next)
+        self.persist_and_swap(next).await
     }
 
-    /// Persist the newly-appended runtime source to disk (durable across
-    /// restart), then hot-swap the validated candidate in. Persist BEFORE the
-    /// swap so a write failure leaves live content untouched.
-    fn persist_and_swap(&self, next: crate::content::LoadedContent) -> Result<String, String> {
+    /// Persist the newly-appended runtime source — to the R2 store if this gate
+    /// authors to a bucket (the unified store), else to local disk — then hot-swap
+    /// the validated candidate in. Persist BEFORE the swap so a write failure
+    /// leaves live content untouched. No lock is held across the `await`.
+    async fn persist_and_swap(
+        &self,
+        next: crate::content::LoadedContent,
+    ) -> Result<String, String> {
         if let Some((name, text)) = next.sources.last() {
-            crate::content::persist_source(name, text)?;
+            match &self.r2_store {
+                Some(store) => crate::content::persist_source_s3(store, name, text).await?,
+                None => crate::content::persist_source(name, text)?,
+            }
         }
         let version_hex = format!("{:016x}", next.version);
         *self.content.write().unwrap() = Arc::new(next);

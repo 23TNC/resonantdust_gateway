@@ -240,62 +240,107 @@ pub fn load_content() -> LoadedContent {
 /// `CONTENT_BASE_URL`, mirroring the repo layout (`data/…`, `visuals/…`,
 /// `locales/<domain>/<lang>.json`). Order within each list is irrelevant — the
 /// gate sorts to reproduce the disk load's append-stable ordering exactly.
-#[derive(serde::Deserialize)]
-struct Manifest {
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct Manifest {
     /// `data/` `.rd` keys (server-authoritative card logic).
     #[serde(default)]
-    data: Vec<String>,
+    pub data: Vec<String>,
     /// `visuals/` `.rd` keys (client-only render facets, same `::name`).
     #[serde(default)]
-    visuals: Vec<String>,
+    pub visuals: Vec<String>,
     /// `domain → locales/<domain>/<lang>.json` key.
     #[serde(default)]
-    locales: std::collections::BTreeMap<String, String>,
+    pub locales: std::collections::BTreeMap<String, String>,
 }
 
-/// Load the base corpus from a public object store (e.g. Cloudflare R2) instead
-/// of local disk — the **authority** gate's `CONTENT_BASE_URL` path. Fetches
-/// `<base>/manifest.json`, then every listed `data/`, `visuals/`, and `locales/`
-/// object, and feeds the **unchanged** [`build_content`]. Source names are
-/// normalized to match [`load_content`]'s on-disk layout (`data/` prefix stripped,
-/// `visuals/` kept), so the version fingerprint is byte-identical to a disk load
-/// of the same files — the migration is lossless and client/gate stay in lockstep.
-pub async fn load_content_r2(base: &str) -> Result<LoadedContent, String> {
-    let (sources, locales) = fetch_r2_sources(base).await?;
+/// Where an authority reads its base corpus from. `Http` is a public read-only
+/// origin (e.g. r2.dev) reached with plain GETs; `S3` is the strongly-consistent
+/// S3 API (R2/MinIO) used when the gate also AUTHORS — so its own poll reads back
+/// exactly what it just wrote, with no public-CDN staleness revert race.
+pub enum ContentSrc {
+    /// Base URL prefix (no trailing slash needed); a key `k` is `GET {base}/{k}`.
+    Http(String),
+    /// S3 store; a key `k` is a `GetObject` on the bucket.
+    S3(std::sync::Arc<crate::s3::R2Store>),
+}
+
+impl ContentSrc {
+    /// Fetch one object body by its manifest-relative key (`manifest.json`,
+    /// `data/…`, `visuals/…`, `locales/…`).
+    async fn get(&self, key: &str) -> Result<String, String> {
+        match self {
+            ContentSrc::Http(base) => {
+                fetch_text(crate::connections::http_client(), &format!("{}/{key}", base.trim_end_matches('/'))).await
+            }
+            ContentSrc::S3(store) => store.get(key).await,
+        }
+    }
+}
+
+/// Load the base corpus from an object store (R2 public HTTP or the S3 API)
+/// instead of local disk — the **authority** gate's `CONTENT_BASE_URL` / R2-creds
+/// path. Fetches `manifest.json`, then every listed object, and feeds the
+/// **unchanged** [`build_content`]. Source names are normalized to match
+/// [`load_content`]'s on-disk layout (`data/` stripped, `visuals/` kept), so the
+/// version fingerprint is byte-identical to a disk load of the same files — the
+/// migration is lossless and client/gate stay in lockstep.
+pub async fn load_content_src(src: &ContentSrc) -> Result<LoadedContent, String> {
+    let (sources, locales) = fetch_sources(src).await?;
     build_content(sources, locales)
 }
 
-/// Poll the R2 corpus and, if its fingerprint differs from `current`, parse +
+/// Poll the corpus and, if its fingerprint differs from `current`, parse +
 /// validate + return the new [`LoadedContent`]; otherwise `Ok(None)` (unchanged
-/// — we skip the parse). The authority's R2 re-poll loop calls this every few
+/// — we skip the parse). The authority's re-poll loop calls this every few
 /// seconds: a *fetch* every tick, but only a *build* on an actual change. A bad
-/// fetch (R2 blip) returns `Err`; the caller logs and keeps live content.
-pub async fn poll_r2_content(base: &str, current: u64) -> Result<Option<LoadedContent>, String> {
-    let (sources, locales) = fetch_r2_sources(base).await?;
+/// fetch (store blip) returns `Err`; the caller logs and keeps live content.
+pub async fn poll_content_src(src: &ContentSrc, current: u64) -> Result<Option<LoadedContent>, String> {
+    let (sources, locales) = fetch_sources(src).await?;
     if content_version(&sources, &locales) == current {
         return Ok(None);
     }
     build_content(sources, locales).map(Some)
 }
 
-/// Fetch the raw ordered `(name, text)` `.rd` sources + `(domain, json)` locales
-/// from R2, normalized to the on-disk layout (so the fingerprint matches a disk
-/// load — see [`load_content`]). Shared by the startup load and the re-poll.
-async fn fetch_r2_sources(
-    base: &str,
-) -> Result<(Vec<(String, String)>, Vec<(String, String)>), String> {
-    let base = base.trim_end_matches('/');
-    let client = crate::connections::http_client();
+/// Persist a newly-authored runtime source to an S3 store + add it to the
+/// manifest, so a restart / poll / peer sees it (the unified-store authoring
+/// path). `name` is the load-relative source name (e.g. `runtime/000000_apple.rd`);
+/// the object key prepends `data/` — the inverse of the load's `data/` strip — so
+/// a reload reads it back under the same name (and `next_runtime_seq` keeps
+/// counting). The manifest's `data` list gains the key (idempotent). Strongly
+/// consistent, so the authority's own poll won't revert it.
+pub async fn persist_source_s3(
+    store: &crate::s3::R2Store,
+    name: &str,
+    text: &str,
+) -> Result<(), String> {
+    let key = format!("data/{name}");
+    store.put(&key, text.as_bytes()).await?;
+    let mut manifest: Manifest = serde_json::from_str(&store.get("manifest.json").await?)
+        .map_err(|e| format!("parse manifest for update: {e}"))?;
+    if !manifest.data.iter().any(|k| k == &key) {
+        manifest.data.push(key);
+    }
+    let body = serde_json::to_string_pretty(&manifest)
+        .map_err(|e| format!("serialize manifest: {e}"))?;
+    store.put("manifest.json", body.as_bytes()).await
+}
 
-    let manifest_url = format!("{base}/manifest.json");
-    let manifest: Manifest = serde_json::from_str(&fetch_text(client, &manifest_url).await?)
-        .map_err(|e| format!("parse {manifest_url}: {e}"))?;
+/// Fetch the raw ordered `(name, text)` `.rd` sources + `(domain, json)` locales
+/// from a [`ContentSrc`], normalized to the on-disk layout (so the fingerprint
+/// matches a disk load — see [`load_content`]). Shared by the startup load and
+/// the re-poll, over either the HTTP or S3 source.
+async fn fetch_sources(
+    src: &ContentSrc,
+) -> Result<(Vec<(String, String)>, Vec<(String, String)>), String> {
+    let manifest: Manifest = serde_json::from_str(&src.get("manifest.json").await?)
+        .map_err(|e| format!("parse manifest.json: {e}"))?;
 
     // `data/` sources: name = key with the `data/` prefix stripped, matching the
     // disk load's `read_tree(dir, "")`. Sort to reproduce its `files.sort()`.
     let mut sources: Vec<(String, String)> = Vec::new();
     for key in &manifest.data {
-        let text = fetch_text(client, &format!("{base}/{key}")).await?;
+        let text = src.get(key).await?;
         sources.push((key.strip_prefix("data/").unwrap_or(key).to_string(), text));
     }
     sources.sort();
@@ -304,7 +349,7 @@ async fn fetch_r2_sources(
     // They load AFTER the whole data tree, so each facet folds onto its def.
     let mut visuals: Vec<(String, String)> = Vec::new();
     for key in &manifest.visuals {
-        let text = fetch_text(client, &format!("{base}/{key}")).await?;
+        let text = src.get(key).await?;
         let name = if key.starts_with("visuals/") { key.clone() } else { format!("visuals/{key}") };
         visuals.push((name, text));
     }
@@ -314,7 +359,7 @@ async fn fetch_r2_sources(
     // Locales: `(domain, json)`, sorted by domain like `read_locales`.
     let mut locales: Vec<(String, String)> = Vec::new();
     for (domain, key) in &manifest.locales {
-        let json = fetch_text(client, &format!("{base}/{key}")).await?;
+        let json = src.get(key).await?;
         locales.push((domain.clone(), json));
     }
     locales.sort();
