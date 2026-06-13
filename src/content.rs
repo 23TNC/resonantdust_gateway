@@ -234,6 +234,83 @@ pub fn load_content() -> LoadedContent {
     }
 }
 
+/// The manifest an R2/HTTP-sourced authority reads to learn its corpus — the
+/// object store can't list a directory the way a disk walk can, so the bucket
+/// carries an explicit, ordered index. Keys are paths relative to
+/// `CONTENT_BASE_URL`, mirroring the repo layout (`data/…`, `visuals/…`,
+/// `locales/<domain>/<lang>.json`). Order within each list is irrelevant — the
+/// gate sorts to reproduce the disk load's append-stable ordering exactly.
+#[derive(serde::Deserialize)]
+struct Manifest {
+    /// `data/` `.rd` keys (server-authoritative card logic).
+    #[serde(default)]
+    data: Vec<String>,
+    /// `visuals/` `.rd` keys (client-only render facets, same `::name`).
+    #[serde(default)]
+    visuals: Vec<String>,
+    /// `domain → locales/<domain>/<lang>.json` key.
+    #[serde(default)]
+    locales: std::collections::BTreeMap<String, String>,
+}
+
+/// Load the base corpus from a public object store (e.g. Cloudflare R2) instead
+/// of local disk — the **authority** gate's `CONTENT_BASE_URL` path. Fetches
+/// `<base>/manifest.json`, then every listed `data/`, `visuals/`, and `locales/`
+/// object, and feeds the **unchanged** [`build_content`]. Source names are
+/// normalized to match [`load_content`]'s on-disk layout (`data/` prefix stripped,
+/// `visuals/` kept), so the version fingerprint is byte-identical to a disk load
+/// of the same files — the migration is lossless and client/gate stay in lockstep.
+pub async fn load_content_r2(base: &str) -> Result<LoadedContent, String> {
+    let base = base.trim_end_matches('/');
+    let client = crate::connections::http_client();
+
+    let manifest_url = format!("{base}/manifest.json");
+    let manifest: Manifest = serde_json::from_str(&fetch_text(client, &manifest_url).await?)
+        .map_err(|e| format!("parse {manifest_url}: {e}"))?;
+
+    // `data/` sources: name = key with the `data/` prefix stripped, matching the
+    // disk load's `read_tree(dir, "")`. Sort to reproduce its `files.sort()`.
+    let mut sources: Vec<(String, String)> = Vec::new();
+    for key in &manifest.data {
+        let text = fetch_text(client, &format!("{base}/{key}")).await?;
+        sources.push((key.strip_prefix("data/").unwrap_or(key).to_string(), text));
+    }
+    sources.sort();
+
+    // `visuals/` sources: name kept as `visuals/…`, matching `read_tree(_, "visuals/")`.
+    // They load AFTER the whole data tree, so each facet folds onto its def.
+    let mut visuals: Vec<(String, String)> = Vec::new();
+    for key in &manifest.visuals {
+        let text = fetch_text(client, &format!("{base}/{key}")).await?;
+        let name = if key.starts_with("visuals/") { key.clone() } else { format!("visuals/{key}") };
+        visuals.push((name, text));
+    }
+    visuals.sort();
+    sources.extend(visuals);
+
+    // Locales: `(domain, json)`, sorted by domain like `read_locales`.
+    let mut locales: Vec<(String, String)> = Vec::new();
+    for (domain, key) in &manifest.locales {
+        let json = fetch_text(client, &format!("{base}/{key}")).await?;
+        locales.push((domain.clone(), json));
+    }
+    locales.sort();
+
+    build_content(sources, locales)
+}
+
+/// `GET` a URL and return its body as text, mapping a transport error or any
+/// non-2xx status into a human-readable `Err` (so a 404 on a manifest-listed key
+/// fails the load loudly rather than silently dropping a source).
+async fn fetch_text(client: &reqwest::Client, url: &str) -> Result<String, String> {
+    let resp = client.get(url).send().await.map_err(|e| format!("GET {url}: {e}"))?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(format!("GET {url}: HTTP {status}"));
+    }
+    resp.text().await.map_err(|e| format!("read {url}: {e}"))
+}
+
 /// Build a [`LoadedContent`] from raw sources + locales, validating both —
 /// **non-panicking** so both startup ([`load_content`]) and runtime
 /// `add_content` share one path. Source **order is preserved** (not sorted): it

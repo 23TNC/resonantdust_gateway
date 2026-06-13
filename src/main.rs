@@ -43,18 +43,28 @@ async fn main() {
 
     // Load the DSL content (the runtime recipe engine + the corpus served to
     // clients) before serving. Topology:
-    //   • authority (`GATE_CONTENT_AUTHORITY` unset) — reads `.rd` from disk,
-    //     serves `/content`, accepts add/modify, owns the canonical files.
+    //   • authority (`GATE_CONTENT_AUTHORITY` unset) — owns the canonical corpus,
+    //     serves `/content`, accepts add/modify. It reads that corpus either from
+    //     local disk (default) or, if `CONTENT_BASE_URL` is set, from a public
+    //     object store (R2) via a manifest — so content can be updated by
+    //     uploading to the bucket.
     //   • peer (`GATE_CONTENT_AUTHORITY=<url>`) — fetches `/content` from the
     //     authority at startup and polls `<url>/content-version` for changes,
     //     mirroring the corpus in memory. Authoring is rejected on peers.
     // Propagation is HTTP authority→peer→client; SpacetimeDB stays game-only.
     let authority = cfg.content_authority.clone();
+    let content_base_url = cfg.content_base_url.clone();
     let content = match &authority {
-        None => {
-            tracing::info!("content: authority (disk-backed)");
-            content::load_content()
-        }
+        None => match &content_base_url {
+            Some(base) => {
+                tracing::info!(%base, "content: authority (R2-backed)");
+                load_r2_content(base).await
+            }
+            None => {
+                tracing::info!("content: authority (disk-backed)");
+                content::load_content()
+            }
+        },
         Some(url) => {
             tracing::info!(%url, "content: peer (fetching from authority)");
             fetch_authority_content(url).await
@@ -105,6 +115,35 @@ async fn main() {
 /// and manual `curl`.
 async fn health() -> &'static str {
     "ok"
+}
+
+/// Load + build the base corpus from R2/HTTP — an **authority** gate's
+/// `CONTENT_BASE_URL` startup load. Retries on a fixed backoff so a transient
+/// network blip (or a bucket still being populated) doesn't kill the gate; exits
+/// the process if the load keeps failing (an authority with no corpus can't serve
+/// clients). A *load* failure (bad/missing manifest, 404, parse error) is fatal
+/// just like the disk path's panic — broken content must not reach clients.
+async fn load_r2_content(base: &str) -> content::LoadedContent {
+    for attempt in 1..=15u32 {
+        match content::load_content_r2(base).await {
+            Ok(c) => {
+                tracing::info!(
+                    %base,
+                    files = c.sources.len(),
+                    locale_domains = c.locales.len(),
+                    version = %format!("{:016x}", c.version),
+                    "content: loaded from R2"
+                );
+                return c;
+            }
+            Err(e) => {
+                tracing::warn!(%base, attempt, error = %e, "content: R2 load failed, retrying")
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+    tracing::error!(%base, "content: R2 load failed after retries; exiting");
+    std::process::exit(1);
 }
 
 /// Fetch + build the corpus from the content authority — a **peer**'s startup

@@ -22,6 +22,14 @@ pub struct GateConfig {
     /// authoring (clients author against the authority). Content coordination is
     /// HTTP-to-authority; SpacetimeDB stays game-state-only.
     pub content_authority: Option<String>,
+    /// Where an **authority** gate reads its base corpus from (`CONTENT_BASE_URL`).
+    /// `None` → read `.rd` + locales from local disk (`CONTENT_DIR`, the default).
+    /// `Some(prefix)` → read from a public object store (e.g. Cloudflare R2): the
+    /// gate fetches `<prefix>/manifest.json` for the ordered file list, then each
+    /// `data/`, `visuals/`, and `locales/` object. Source names are normalized to
+    /// the on-disk layout so the version fingerprint is identical to a disk load
+    /// of the same files. Ignored on a peer (a peer mirrors its authority).
+    pub content_base_url: Option<String>,
 }
 
 impl GateConfig {
@@ -36,10 +44,12 @@ impl GateConfig {
         let content_authority = std::env::var("GATE_CONTENT_AUTHORITY")
             .ok()
             .filter(|s| !s.is_empty());
+        let content_base_url = std::env::var("CONTENT_BASE_URL").ok().filter(|s| !s.is_empty());
         Self {
             uri: std::env::var("GATE_STDB_URI").unwrap_or_else(|_| DEFAULT_STDB_URI.to_string()),
             env,
             content_authority,
+            content_base_url,
         }
     }
 
