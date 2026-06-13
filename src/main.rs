@@ -29,6 +29,14 @@ use tokio::signal;
 /// reaches it; override with `GATE_LISTEN`.
 const DEFAULT_LISTEN: &str = "0.0.0.0:8473";
 
+/// Component version snapshot, baked in at compile time by `bin/versions` (which
+/// `bin/gate build` runs first). Source-closure hashes of every build unit —
+/// `{build, generated, components{hash,seq}}`. Served verbatim at `/versions` so
+/// a client can detect it's talking to a stale gate/shard. `include_str!` (not a
+/// runtime read) because the remote box has no repo checkout; the copy lives in
+/// `gateway/src/` so it's reachable past the docker bind-mount boundary.
+const VERSIONS_JSON: &str = include_str!("versions.json");
+
 #[tokio::main]
 async fn main() {
     init_tracing();
@@ -111,6 +119,9 @@ async fn main() {
         // locales the gate validates against, so they agree by construction.
         .route("/content", get(serve_content))
         .route("/content-version", get(serve_content_version))
+        // Build fingerprints: baked component hashes + the live content version,
+        // so a client can flag a stale deployment per-component.
+        .route("/versions", get(serve_versions))
         .with_state(pool);
 
     let listener = match TcpListener::bind(&listen).await {
@@ -304,6 +315,27 @@ async fn serve_content_version(State(pool): State<Arc<connections::Pool>>) -> im
     (
         [(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")],
         pool.content_version_hex(),
+    )
+}
+
+/// `GET /versions` — the gate's build fingerprints. Merges the compile-time
+/// `VERSIONS_JSON` snapshot (every component's source-closure hash) with the
+/// gate's LIVE content version (`content_live`) — content hot-swaps without a
+/// rebuild, so its live fingerprint is the authoritative one, separate from the
+/// baked source hash. The client compares `server.components` against its own
+/// build-injected snapshot to spot a stale gate/shard.
+async fn serve_versions(State(pool): State<Arc<connections::Pool>>) -> impl IntoResponse {
+    let body = format!(
+        "{{\"server\":{server},\"content_live\":\"{live}\"}}",
+        server = VERSIONS_JSON.trim(),
+        live = pool.content_version_hex(),
+    );
+    (
+        [
+            (axum::http::header::CONTENT_TYPE, "application/json"),
+            (axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
+        ],
+        body,
     )
 }
 

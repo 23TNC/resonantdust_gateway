@@ -341,6 +341,10 @@ async fn handle(
                 add_content(pool, upstream_players, session, tx, cid, args).await;
             } else if reducer == "modify_content" {
                 modify_content(pool, upstream_players, session, tx, cid, args).await;
+            } else if reducer == "modify_locale" {
+                modify_locale(pool, upstream_players, session, tx, cid, args).await;
+            } else if reducer == "modify_visuals" {
+                modify_visuals(pool, upstream_players, session, tx, cid, args).await;
             } else if reducer == "upload_master" {
                 // Art authoring: write an edited master texture channel to the
                 // texture R2 bucket. Same content-author gate as add/modify.
@@ -741,6 +745,50 @@ async fn modify_content(
     }
     .await;
     reply_content(pool, tx, cid, "modify_content", result);
+}
+
+/// Handle `modify_locale`: authorize, then replace a locale `domain`'s JSON
+/// (validate + hot-swap + persist). Broadcasts `content_changed` like the `.rd`
+/// author path, so clients reload the new strings.
+async fn modify_locale(
+    pool: &Arc<Pool>,
+    upstream_players: Option<&Arc<bindings::players::DbConnection>>,
+    session: &tokio::sync::Mutex<Option<u32>>,
+    tx: &UnboundedSender<String>,
+    cid: u32,
+    args: serde_json::Value,
+) {
+    let result = async {
+        reject_if_peer(pool)?;
+        require_content_author(upstream_players, session).await?;
+        let domain = arg_str(&args, "domain")?;
+        let json = arg_str(&args, "json")?;
+        pool.modify_locale(domain, json).await
+    }
+    .await;
+    reply_content(pool, tx, cid, "modify_locale", result);
+}
+
+/// Handle `modify_visuals`: authorize, then replace a visuals source `name`
+/// (`visuals/…`) with `text` (validate + hot-swap + persist). Broadcasts
+/// `content_changed` like the `.rd`/locale author paths, so clients reload.
+async fn modify_visuals(
+    pool: &Arc<Pool>,
+    upstream_players: Option<&Arc<bindings::players::DbConnection>>,
+    session: &tokio::sync::Mutex<Option<u32>>,
+    tx: &UnboundedSender<String>,
+    cid: u32,
+    args: serde_json::Value,
+) {
+    let result = async {
+        reject_if_peer(pool)?;
+        require_content_author(upstream_players, session).await?;
+        let name = arg_str(&args, "name")?;
+        let text = arg_str(&args, "text")?;
+        pool.modify_visuals(name, text).await
+    }
+    .await;
+    reply_content(pool, tx, cid, "modify_visuals", result);
 }
 
 /// Handle `upload_master`: authorize, then write an edited master texture channel

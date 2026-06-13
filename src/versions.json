@@ -1,0 +1,15 @@
+{
+  "build": 9,
+  "generated": "2026-06-13T19:52:34Z",
+  "components": {
+    "shared": { "hash": "bf6769ba723ccf713b5e682cc410e1f21130adeb410d1a9fc5c5fe35d4622ca7", "seq": 1 },
+    "shard": { "hash": "9fcffcbe649c9d65ec70f0c620c607c40944e25034a5e18900084aa67ae5f46d", "seq": 2 },
+    "players": { "hash": "97670cca871b6e411f2f9a716e5f9131b22b6ff4684f7fca5ccae84c2bdebc62", "seq": 3 },
+    "chat": { "hash": "327dc9fae578063b1728feafcc5ff92e811c67a1897ffadee7a8407cd5918aa7", "seq": 4 },
+    "regionindex": { "hash": "88b165b5ce2062da6deb5d4a81355eb92bb89f18864941849e4b99eafb45b5c5", "seq": 5 },
+    "gate": { "hash": "c24d7e1182c46880201946e5014733e8db2c842514e4aac2d318df3abb32b041", "seq": 6 },
+    "content": { "hash": "422abbd39644c3fdc9d2935ab3313eeb57a8de3417aa3b3aa5ca3ff2adc48b21", "seq": 7 },
+    "client": { "hash": "e9b22a92d29d01b01677c3720c7487c534d606e86dd9191fc742a5458c17b55b", "seq": 8 },
+    "view": { "hash": "62ea52efbf3ee45027313bd6453d6b053f6aad06ad9010e1ba5d476ab6c36607", "seq": 9 }
+  }
+}

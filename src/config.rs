@@ -26,9 +26,10 @@ pub struct GateConfig {
     /// `None` → read `.rd` + locales from local disk (`CONTENT_DIR`, the default).
     /// `Some(prefix)` → read from a public object store (e.g. Cloudflare R2): the
     /// gate fetches `<prefix>/manifest.json` for the ordered file list, then each
-    /// `data/`, `visuals/`, and `locales/` object. Source names are normalized to
-    /// the on-disk layout so the version fingerprint is identical to a disk load
-    /// of the same files. Ignored on a peer (a peer mirrors its authority).
+    /// `data/`, `visuals/`, and `locales/` object — the prefix mirrors the repo
+    /// `content/` directory. Source names are normalized to the on-disk layout so
+    /// the version fingerprint is identical to a disk load of the same files.
+    /// Ignored on a peer (a peer mirrors its authority).
     pub content_base_url: Option<String>,
 }
 

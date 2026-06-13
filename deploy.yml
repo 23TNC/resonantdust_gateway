@@ -1,0 +1,48 @@
+# Remote deploy compose for the gateway on a Lightsail (or any remote-daemon)
+# host — the `alpha` env. Mirrors spacetime/deploy.yml deliberately:
+#
+#   • NO source bind mount and NO build service. The 2GB box can't compile the
+#     workspace, so the binary is built LOCALLY and pushed in as a prebuilt
+#     artifact (`bin/gate publish` docker-cp's it, exactly like `st publish`
+#     ships wasm). A named volume stands in for the bind mount.
+#   • NO content mount. The alpha gate sources its corpus from R2 (R2_* creds in
+#     bin/keys/r2.env make it an S3-backed authority — see gateway/src/main.rs),
+#     so there's no on-disk content to mount.
+#   • Reaches spacetimedb as `start:3000` over the shared external `resonantdust`
+#     network (config.rs DEFAULT_STDB_URI) — no GATE_STDB_URI override needed.
+#
+# Public endpoint: gateway.resonantdust.com:8473 (view/src/client/environments.ts).
+# The :8473 ingress must be open on the box, like :3000 for spacetime.
+#
+# Usage (from the laptop, driving the remote daemon via the lightsail context):
+#   GATE_ENV=alpha bin/gate up        # long-lived idle container on the network
+#   GATE_ENV=alpha bin/gate build     # compiles LOCALLY (rust:slim)
+#   GATE_ENV=alpha bin/gate publish   # push prebuilt binary + run it detached
+#   GATE_ENV=alpha bin/gate logs      # tail the in-container log
+networks:
+  resonantdust:
+    external: true
+
+volumes:
+  # Stands in for the local bind mount: holds the pushed binary
+  # (/workspace/target/release/gateway) and the runtime log. No host paths exist
+  # on the remote, so a named volume is the durable in-container home.
+  gate-run:
+
+services:
+  # Long-lived idle gate container. `sleep infinity` so the binary can be
+  # (re)pushed and run inside it via `bin/gate publish` — mirroring how the
+  # spacetime container idles and `st publish` deploys into it. GATE_ENV /
+  # GATE_LISTEN + the R2 content env are injected at run time by `gate publish`
+  # (not baked here), so this stays a generic runner.
+  gate-alpha:
+    image: rust:slim          # runtime needs only libssl.so.3, which rust:slim has
+    restart: unless-stopped
+    networks:
+      - resonantdust
+    ports:
+      - "8473:8473"
+    volumes:
+      - gate-run:/workspace
+    working_dir: /workspace
+    command: ["sleep", "infinity"]

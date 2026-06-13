@@ -18,6 +18,12 @@ pub struct R2Store {
     /// The endpoint host (incl. port) — the SigV4 `host` header.
     host: String,
     bucket: String,
+    /// Key prefix prepended to every object key (empty, or ends with `/`). Lets the
+    /// content store live under a bucket "folder" (e.g. `dsl/`) so DSL content and
+    /// textures can share one bucket without colliding. Empty for the texture store
+    /// (masters sit at `textures/…` at the root). Applied transparently in
+    /// [`signed`](Self::signed) — all callers pass root-relative keys.
+    prefix: String,
     /// SigV4 region: `auto` for R2, the bucket's region for MinIO (`us-east-1`).
     region: String,
     key_id: String,
@@ -28,7 +34,9 @@ impl R2Store {
     /// The **content** store from env. All four core vars required, else `None`
     /// (no R2 writes — the gate falls back to disk persistence): `R2_S3_ENDPOINT`,
     /// `R2_BUCKET`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`. `R2_REGION`
-    /// optional (default `auto`, which R2 accepts).
+    /// optional (default `auto`, which R2 accepts). `R2_CONTENT_PREFIX` optional
+    /// (default none) — set e.g. `dsl/` to namespace the corpus under a folder so
+    /// content and textures coexist in one bucket.
     pub fn from_env() -> Option<Self> {
         Self::build(
             envv("R2_S3_ENDPOINT")?,
@@ -36,6 +44,7 @@ impl R2Store {
             envv("R2_ACCESS_KEY_ID")?,
             envv("R2_SECRET_ACCESS_KEY")?,
             envv("R2_REGION"),
+            envv("R2_CONTENT_PREFIX").unwrap_or_default(),
         )
     }
 
@@ -52,7 +61,8 @@ impl R2Store {
         let key_id = envv("TEXTURE_R2_ACCESS_KEY_ID").or_else(|| envv("R2_ACCESS_KEY_ID"))?;
         let secret = envv("TEXTURE_R2_SECRET_ACCESS_KEY").or_else(|| envv("R2_SECRET_ACCESS_KEY"))?;
         let region = envv("TEXTURE_R2_REGION").or_else(|| envv("R2_REGION"));
-        Self::build(endpoint, bucket, key_id, secret, region)
+        // Textures sit at `textures/…` at the bucket root — no content prefix.
+        Self::build(endpoint, bucket, key_id, secret, region, String::new())
     }
 
     fn build(
@@ -61,6 +71,7 @@ impl R2Store {
         key_id: String,
         secret: String,
         region: Option<String>,
+        prefix: String,
     ) -> Option<Self> {
         let region = region.unwrap_or_else(|| "auto".to_string());
         let endpoint = endpoint.trim_end_matches('/').to_string();
@@ -72,7 +83,11 @@ impl R2Store {
             .next()
             .unwrap_or("")
             .to_string();
-        Some(Self { endpoint, host, bucket, region, key_id, secret })
+        // Normalize: drop leading slashes, ensure a single trailing slash when set
+        // (so `prefix + key` joins cleanly). Empty stays empty (root-addressed).
+        let prefix = prefix.trim_matches('/').to_string();
+        let prefix = if prefix.is_empty() { String::new() } else { format!("{prefix}/") };
+        Some(Self { endpoint, host, bucket, prefix, region, key_id, secret })
     }
 
     /// GET an object's body as UTF-8 text.
@@ -106,7 +121,9 @@ impl R2Store {
         key: &str,
         body: &[u8],
     ) -> Result<reqwest::Response, String> {
-        let canonical_uri = format!("/{}/{}", self.bucket, uri_encode_path(key));
+        // Prepend the content prefix (e.g. `dsl/`) so a root-relative key like
+        // `data/x.rd` addresses `dsl/data/x.rd`. Empty prefix → unchanged (root).
+        let canonical_uri = format!("/{}/{}", self.bucket, uri_encode_path(&format!("{}{key}", self.prefix)));
         let url = format!("{}{}", self.endpoint, canonical_uri);
 
         let now = chrono::Utc::now();

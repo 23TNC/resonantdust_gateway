@@ -114,13 +114,14 @@ async fn propose(pool: &Pool, args: Value) -> Result<(), String> {
 /// attempt lands, so retries never double-apply (no re-stamp / undo needed).
 const BACKWARD_GRACE_MS: u64 = 10_000;
 
-/// Forward grace: reject a proposal whose `client_time_ms` is more than this
-/// AHEAD of the gate's wall clock. The client deliberately runs on a buffered
-/// clock BEHIND true server time (`client_delay` ≥ 1.5s), so any meaningful
-/// "ahead" is clock skew/a bug — surface it (the client's `correct_from_drift`
-/// re-seats and resends) rather than silently clamping, which would land
-/// completion rows at unexpected times. Small grace absorbs extrapolation jitter.
-const FORWARD_GRACE_MS: u64 = 1_000;
+/// Forward grace: reject a proposal whose `client_time_ms` is AHEAD of the gate's
+/// wall clock AT ALL. The client deliberately runs on a buffered clock BEHIND true
+/// server time (`client_delay` ≥ 1.5s), so a value ahead of the server is never
+/// legitimate jitter — it's genuine skew, and accepting it would land the row in
+/// the server's future where a correctly-clocked observer can't see it yet. So
+/// there is NO forward grace: any "ahead" is surfaced, and the client re-seats its
+/// clock and re-requests (it never clamps — a future stamp is a real signal).
+const FORWARD_GRACE_MS: u64 = 0;
 
 /// Resolve the action's `now_ms`: the client's clock, **rejected if too far in
 /// the past OR future**. The client runs behind true server time, so stamping at

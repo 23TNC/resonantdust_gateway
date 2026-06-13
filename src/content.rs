@@ -91,6 +91,13 @@ impl LoadedContent {
             format!("modify_content: no card lineage {lineage:?} (use add_content)")
         })?;
         let next = resonantdust_dsl::loader::version_of(head) + 1;
+        // TODO(def-id GC): each modify mints a NEW def id (`<lineage>.<next>`) and
+        // orphans the prior version — kept so live instances stamped with it keep
+        // a valid def. Once no card row references an old version's id (instances
+        // drained as recipes prefer the head), that runtime source + id can be
+        // dropped and the id pool reclaimed. Needs a sweep: scan live card rows
+        // for referenced def ids, then prune runtime sources whose only def is an
+        // unreferenced non-head version. Append-only growth until then.
 
         let needle = format!("::{lineage}>");
         if !text.contains(&needle) {
@@ -100,6 +107,43 @@ impl LoadedContent {
         }
         let versioned = text.replacen(&needle, &format!("::{lineage}.{next}>"), 1);
         self.append_runtime(&format!("{lineage}.{next}"), versioned)
+    }
+
+    /// A new content set with locale `domain`'s JSON replaced by `json` (added if
+    /// the domain is new) + revalidated by rebuilding the whole corpus. Unlike the
+    /// `.rd` modify path there's no versioning — a locale domain is a single JSON
+    /// blob, replaced in place. Errors (leaving live content untouched) if the
+    /// rebuild fails; the caller persists `locales/<domain>/<lang>.json` on `Ok`.
+    pub fn with_modified_locale(&self, domain: String, json: String) -> Result<LoadedContent, String> {
+        let mut locales = self.locales.clone();
+        match locales.iter_mut().find(|(d, _)| *d == domain) {
+            Some(entry) => entry.1 = json,
+            None => locales.push((domain, json)),
+        }
+        locales.sort();
+        build_content(self.sources.clone(), locales)
+    }
+
+    /// A new content set with the visuals source `name` (e.g. `visuals/cards/x.rd`)
+    /// replaced by `text` (added if new) + revalidated. Like the locale path,
+    /// visuals are overwritten IN PLACE rather than versioned: a `:visuals` facet
+    /// is pure presentation (nothing references a "visuals version"), and an
+    /// in-place edit keeps the source in its visuals-tree position so live order ==
+    /// reloaded order — a runtime overlay in the *data* tree would instead load
+    /// before the base visuals and get re-folded over on reload. Errors (leaving
+    /// live content untouched) if `name` isn't under `visuals/` or the rebuild
+    /// fails; the caller persists `visuals/…` on `Ok`.
+    pub fn with_modified_visuals(&self, name: String, text: String) -> Result<LoadedContent, String> {
+        if !name.starts_with("visuals/") || name.contains("..") {
+            return Err(format!("modify_visuals: name {name:?} must be a `visuals/…` path"));
+        }
+        let mut sources = self.sources.clone();
+        match sources.iter_mut().find(|(n, _)| *n == name) {
+            Some(entry) => entry.1 = text,
+            // A new visuals source: push it last so it folds AFTER the base visuals.
+            None => sources.push((name, text)),
+        }
+        build_content(sources, self.locales.clone())
     }
 
     /// Append `text` as the next runtime source and rebuild. The source name is
@@ -172,6 +216,58 @@ pub fn persist_source(name: &str, text: &str) -> Result<(), String> {
     std::fs::write(&path, text).map_err(|e| format!("persist {name:?}: write: {e}"))
 }
 
+/// The visuals tree root — `VISUALS_DIR`, else the `visuals/` sibling of the
+/// content dir (matching [`load_content`]'s derivation).
+fn visuals_dir() -> String {
+    let rd_dir = std::env::var("CONTENT_DIR").unwrap_or_else(|_| CONTENT_DIR.to_string());
+    std::env::var("VISUALS_DIR").unwrap_or_else(|_| {
+        Path::new(&rd_dir)
+            .parent()
+            .unwrap_or(Path::new(&rd_dir))
+            .join(VISUALS_SUBDIR)
+            .display()
+            .to_string()
+    })
+}
+
+/// Persist an authored visuals source to disk at `<visuals_dir>/<rel>` (the layout
+/// the visuals `read_tree` reads), so it survives a restart. `name` is the source
+/// name with its `visuals/` prefix (e.g. `visuals/cards/x.rd`); the prefix maps to
+/// the visuals tree root. The visuals-side mirror of [`persist_source`].
+pub fn persist_visuals(name: &str, text: &str) -> Result<(), String> {
+    let rel = name.strip_prefix("visuals/").unwrap_or(name);
+    let path = Path::new(&visuals_dir()).join(rel);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("persist visuals {name:?}: mkdir: {e}"))?;
+    }
+    std::fs::write(&path, text).map_err(|e| format!("persist visuals {name:?}: write: {e}"))
+}
+
+/// The locale tree root — `LOCALES_DIR`, else the `locales/` sibling of the
+/// content dir (matching [`read_locales`]'s derivation).
+fn locales_dir() -> String {
+    let rd_dir = std::env::var("CONTENT_DIR").unwrap_or_else(|_| CONTENT_DIR.to_string());
+    std::env::var("LOCALES_DIR").unwrap_or_else(|_| {
+        Path::new(&rd_dir)
+            .parent()
+            .unwrap_or(Path::new(&rd_dir))
+            .join(LOCALES_SUBDIR)
+            .display()
+            .to_string()
+    })
+}
+
+/// Persist a locale domain's JSON to disk at `<locales_dir>/<domain>/<lang>.json`
+/// (the layout [`read_locales`] reads), so it survives a restart. The locale-side
+/// mirror of [`persist_source`].
+pub fn persist_locale(domain: &str, json: &str) -> Result<(), String> {
+    let path = Path::new(&locales_dir()).join(domain).join(format!("{LOCALE_LANG}.json"));
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("persist locale {domain:?}: mkdir: {e}"))?;
+    }
+    std::fs::write(&path, json).map_err(|e| format!("persist locale {domain:?}: write: {e}"))
+}
+
 /// Parse the `.rd` corpus into a [`Bundle`] and read + validate the locale JSON,
 /// returning everything the gate needs to both run and serve content. Panics on
 /// a bad corpus or bad locale JSON — a gate serving broken content to clients is
@@ -236,10 +332,11 @@ pub fn load_content() -> LoadedContent {
 
 /// The manifest an R2/HTTP-sourced authority reads to learn its corpus — the
 /// object store can't list a directory the way a disk walk can, so the bucket
-/// carries an explicit, ordered index. Keys are paths relative to
-/// `CONTENT_BASE_URL`, mirroring the repo layout (`data/…`, `visuals/…`,
-/// `locales/<domain>/<lang>.json`). Order within each list is irrelevant — the
-/// gate sorts to reproduce the disk load's append-stable ordering exactly.
+/// carries an explicit, ordered index. It mirrors the repo `content/` directory:
+/// `data/…`, `visuals/…`, `locales/<domain>/<lang>.json`, with `manifest.json`
+/// alongside; the base URL/prefix points at that directory. Order within each
+/// list is irrelevant — the gate sorts to reproduce the disk load's
+/// append-stable ordering exactly.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct Manifest {
     /// `data/` `.rd` keys (server-authoritative card logic).
@@ -326,6 +423,47 @@ pub async fn persist_source_s3(
     store.put("manifest.json", body.as_bytes()).await
 }
 
+/// Persist an authored visuals source to the S3 store at its `visuals/…` key +
+/// register it in the manifest's `visuals` list (idempotent), so a reload / poll /
+/// peer reads it back. `name` carries its `visuals/` prefix (the manifest key and
+/// the object key are the same flat path; the store adds the content prefix). The
+/// visuals-side mirror of [`persist_source_s3`] — but keyed in place (no runtime
+/// versioning), like the locale path.
+pub async fn persist_visuals_s3(
+    store: &crate::s3::R2Store,
+    name: &str,
+    text: &str,
+) -> Result<(), String> {
+    store.put(name, text.as_bytes()).await?;
+    let mut manifest: Manifest = serde_json::from_str(&store.get("manifest.json").await?)
+        .map_err(|e| format!("parse manifest for update: {e}"))?;
+    if !manifest.visuals.iter().any(|k| k == name) {
+        manifest.visuals.push(name.to_string());
+    }
+    let body = serde_json::to_string_pretty(&manifest)
+        .map_err(|e| format!("serialize manifest: {e}"))?;
+    store.put("manifest.json", body.as_bytes()).await
+}
+
+/// Persist a locale domain's JSON to the S3 store at
+/// `locales/<domain>/<lang>.json` + register it in the manifest's `locales` map,
+/// so a reload/poll/peer reads it back. The locale-side mirror of
+/// [`persist_source_s3`].
+pub async fn persist_locale_s3(
+    store: &crate::s3::R2Store,
+    domain: &str,
+    json: &str,
+) -> Result<(), String> {
+    let key = format!("{LOCALES_SUBDIR}/{domain}/{LOCALE_LANG}.json");
+    store.put(&key, json.as_bytes()).await?;
+    let mut manifest: Manifest = serde_json::from_str(&store.get("manifest.json").await?)
+        .map_err(|e| format!("parse manifest for update: {e}"))?;
+    manifest.locales.entry(domain.to_string()).or_insert(key);
+    let body = serde_json::to_string_pretty(&manifest)
+        .map_err(|e| format!("serialize manifest: {e}"))?;
+    store.put("manifest.json", body.as_bytes()).await
+}
+
 /// Fetch the raw ordered `(name, text)` `.rd` sources + `(domain, json)` locales
 /// from a [`ContentSrc`], normalized to the on-disk layout (so the fingerprint
 /// matches a disk load — see [`load_content`]). Shared by the startup load and
@@ -337,7 +475,9 @@ async fn fetch_sources(
         .map_err(|e| format!("parse manifest.json: {e}"))?;
 
     // `data/` sources: name = key with the `data/` prefix stripped, matching the
-    // disk load's `read_tree(dir, "")`. Sort to reproduce its `files.sort()`.
+    // disk load's `read_tree(dir, "")`. Sort to reproduce its `files.sort()`. The
+    // manifest mirrors the repo `content/` dir (`data/`, `visuals/`, `locales/`,
+    // `manifest.json`); the base URL/prefix points at that dir.
     let mut sources: Vec<(String, String)> = Vec::new();
     for key in &manifest.data {
         let text = src.get(key).await?;

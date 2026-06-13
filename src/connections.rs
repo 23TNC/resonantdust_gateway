@@ -243,6 +243,37 @@ impl Pool {
         self.persist_and_swap(next).await
     }
 
+    /// Replace a locale `domain`'s JSON, validating (rebuild) + persisting (R2 or
+    /// disk) + hot-swapping. Same lock discipline as [`modify_content`]; locales
+    /// aren't versioned (a domain is one JSON blob). Returns the new version (hex).
+    pub async fn modify_locale(&self, domain: String, json: String) -> Result<String, String> {
+        let current = self.content.read().unwrap().clone();
+        let next = current.with_modified_locale(domain.clone(), json.clone())?;
+        match &self.r2_store {
+            Some(store) => crate::content::persist_locale_s3(store, &domain, &json).await?,
+            None => crate::content::persist_locale(&domain, &json)?,
+        }
+        let version_hex = format!("{:016x}", next.version);
+        *self.content.write().unwrap() = Arc::new(next);
+        Ok(version_hex)
+    }
+
+    /// Replace a visuals source `name` (`visuals/…`) with `text`, validating
+    /// (rebuild) + persisting (R2 or disk) + hot-swapping. Same lock discipline as
+    /// [`modify_locale`]; visuals are overwritten in place (not versioned). Returns
+    /// the new version (hex).
+    pub async fn modify_visuals(&self, name: String, text: String) -> Result<String, String> {
+        let current = self.content.read().unwrap().clone();
+        let next = current.with_modified_visuals(name.clone(), text.clone())?;
+        match &self.r2_store {
+            Some(store) => crate::content::persist_visuals_s3(store, &name, &text).await?,
+            None => crate::content::persist_visuals(&name, &text)?,
+        }
+        let version_hex = format!("{:016x}", next.version);
+        *self.content.write().unwrap() = Arc::new(next);
+        Ok(version_hex)
+    }
+
     /// Persist the newly-appended runtime source — to the R2 store if this gate
     /// authors to a bucket (the unified store), else to local disk — then hot-swap
     /// the validated candidate in. Persist BEFORE the swap so a write failure
