@@ -72,9 +72,13 @@ async fn main() {
     };
     let pool = Arc::new(connections::Pool::new(cfg, content));
 
-    // A peer keeps its in-memory corpus in sync by polling the authority.
+    // A peer keeps its in-memory corpus in sync by polling the authority. An
+    // R2-backed authority keeps ITS corpus in sync by polling the bucket — so an
+    // upload propagates authority→peer→client with no restart.
     if authority.is_some() {
         spawn_content_poll(pool.clone());
+    } else if let Some(base) = content_base_url {
+        spawn_r2_content_poll(pool.clone(), base);
     }
 
     let app = Router::new()
@@ -144,6 +148,38 @@ async fn load_r2_content(base: &str) -> content::LoadedContent {
     }
     tracing::error!(%base, "content: R2 load failed after retries; exiting");
     std::process::exit(1);
+}
+
+/// Spawn the R2 re-poll loop — an **R2-backed authority**'s live-update path.
+/// Every `CONTENT_POLL_SECS` (default 10) it re-fetches the bucket corpus; on a
+/// fingerprint change it revalidates, hot-swaps the live corpus, and broadcasts
+/// `content_changed` to this gate's clients. Peers of this authority see the new
+/// `/content-version` on their own poll and mirror it. A bad fetch/parse leaves
+/// live content untouched (a broken upload never reaches clients). This is the
+/// authority analog of [`spawn_content_poll`] (which mirrors an upstream gate).
+fn spawn_r2_content_poll(pool: Arc<connections::Pool>, base: String) {
+    let base = base.trim_end_matches('/').to_string();
+    let secs = std::env::var("CONTENT_POLL_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .filter(|&s| s > 0)
+        .unwrap_or(10);
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(secs));
+        loop {
+            tick.tick().await;
+            match content::poll_r2_content(&base, pool.content_version_num()).await {
+                Ok(Some(next)) => {
+                    pool.swap_content(next);
+                    let version = pool.content_version_hex();
+                    tracing::info!(%version, "authority: content updated from R2");
+                    pool.broadcast(resonantdust_protocol::protocol::GateMsg::content_changed(version));
+                }
+                Ok(None) => {} // unchanged — the common case
+                Err(e) => tracing::warn!(%base, error = %e, "authority: R2 poll failed"),
+            }
+        }
+    });
 }
 
 /// Fetch + build the corpus from the content authority — a **peer**'s startup

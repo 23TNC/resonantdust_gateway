@@ -199,6 +199,12 @@ impl Pool {
         format!("{:016x}", self.content.read().unwrap().version)
     }
 
+    /// The corpus version fingerprint as the raw `u64` (for the R2 re-poll's
+    /// change check, which compares against a freshly-fetched fingerprint).
+    pub fn content_version_num(&self) -> u64 {
+        self.content.read().unwrap().version
+    }
+
     /// Add a new `.rd` source `(name, text)` to the live content, validating the
     /// merged corpus and hot-swapping it on success. Returns the new version
     /// fingerprint (hex). On `Err` the live content is untouched (validation

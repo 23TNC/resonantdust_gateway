@@ -261,6 +261,29 @@ struct Manifest {
 /// `visuals/` kept), so the version fingerprint is byte-identical to a disk load
 /// of the same files — the migration is lossless and client/gate stay in lockstep.
 pub async fn load_content_r2(base: &str) -> Result<LoadedContent, String> {
+    let (sources, locales) = fetch_r2_sources(base).await?;
+    build_content(sources, locales)
+}
+
+/// Poll the R2 corpus and, if its fingerprint differs from `current`, parse +
+/// validate + return the new [`LoadedContent`]; otherwise `Ok(None)` (unchanged
+/// — we skip the parse). The authority's R2 re-poll loop calls this every few
+/// seconds: a *fetch* every tick, but only a *build* on an actual change. A bad
+/// fetch (R2 blip) returns `Err`; the caller logs and keeps live content.
+pub async fn poll_r2_content(base: &str, current: u64) -> Result<Option<LoadedContent>, String> {
+    let (sources, locales) = fetch_r2_sources(base).await?;
+    if content_version(&sources, &locales) == current {
+        return Ok(None);
+    }
+    build_content(sources, locales).map(Some)
+}
+
+/// Fetch the raw ordered `(name, text)` `.rd` sources + `(domain, json)` locales
+/// from R2, normalized to the on-disk layout (so the fingerprint matches a disk
+/// load — see [`load_content`]). Shared by the startup load and the re-poll.
+async fn fetch_r2_sources(
+    base: &str,
+) -> Result<(Vec<(String, String)>, Vec<(String, String)>), String> {
     let base = base.trim_end_matches('/');
     let client = crate::connections::http_client();
 
@@ -296,7 +319,7 @@ pub async fn load_content_r2(base: &str) -> Result<LoadedContent, String> {
     }
     locales.sort();
 
-    build_content(sources, locales)
+    Ok((sources, locales))
 }
 
 /// `GET` a URL and return its body as text, mapping a transport error or any
@@ -322,9 +345,10 @@ pub fn build_content(
     locales: Vec<(String, String)>,
 ) -> Result<LoadedContent, String> {
     // Content-version fingerprint (P4 invariant): a hash of the ordered
-    // `(name, text)` sources. All gates in a multi-gate deploy MUST agree on the
-    // canonical order (hence `version`) — divergent order means divergent ids.
-    let version = content_version(&sources);
+    // `(name, text)` sources + `(domain, json)` locales. All gates in a
+    // multi-gate deploy MUST agree on the canonical order (hence `version`) —
+    // divergent order means divergent ids.
+    let version = content_version(&sources, &locales);
 
     // Validate the locale JSON (the gate doesn't render strings; this confirms
     // it parses before we serve it).
@@ -394,10 +418,12 @@ fn read_locales(rd_dir: &str) -> Vec<(String, String)> {
 }
 
 /// A stable 64-bit fingerprint of the loaded corpus — FNV-1a over each sorted
-/// source's relative name + bytes. Deterministic across machines (no hashing of
-/// absolute paths or timestamps), so two gates with identical `.rd` log the same
-/// value. Not cryptographic; a deploy-time equality check, not a security gate.
-fn content_version(sources: &[(String, String)]) -> u64 {
+/// source's relative name + bytes, then each locale `domain` + bytes.
+/// Deterministic across machines (no hashing of absolute paths or timestamps),
+/// so two gates with identical content log the same value. Locales participate
+/// so a locale-only edit changes the version and triggers a client reload. Not
+/// cryptographic; a deploy-time equality check, not a security gate.
+fn content_version(sources: &[(String, String)], locales: &[(String, String)]) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325; // FNV-1a offset basis
     let mut feed = |bytes: &[u8]| {
         for &b in bytes {
@@ -411,6 +437,12 @@ fn content_version(sources: &[(String, String)]) -> u64 {
         feed(base.as_bytes());
         feed(b"\0");
         feed(text.as_bytes());
+        feed(b"\0");
+    }
+    for (domain, json) in locales {
+        feed(domain.as_bytes());
+        feed(b"\0");
+        feed(json.as_bytes());
         feed(b"\0");
     }
     h
