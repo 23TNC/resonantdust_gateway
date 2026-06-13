@@ -341,6 +341,10 @@ async fn handle(
                 add_content(pool, upstream_players, session, tx, cid, args).await;
             } else if reducer == "modify_content" {
                 modify_content(pool, upstream_players, session, tx, cid, args).await;
+            } else if reducer == "upload_master" {
+                // Art authoring: write an edited master texture channel to the
+                // texture R2 bucket. Same content-author gate as add/modify.
+                upload_master(pool, upstream_players, session, tx, cid, args).await;
             } else {
                 relay_call(pool, session, tx, cid, &reducer, args).await;
             }
@@ -737,6 +741,46 @@ async fn modify_content(
     }
     .await;
     reply_content(pool, tx, cid, "modify_content", result);
+}
+
+/// Handle `upload_master`: authorize, then write an edited master texture channel
+/// (`aspect`/`faction`/`variant`/`channel` + base64 PNG `data`) to the texture R2
+/// bucket. Same content-author gate as `add_content`; no content hot-swap (masters
+/// are the LOD source, not the rendered corpus), so it just replies ok/err.
+async fn upload_master(
+    pool: &Arc<Pool>,
+    upstream_players: Option<&Arc<bindings::players::DbConnection>>,
+    session: &tokio::sync::Mutex<Option<u32>>,
+    tx: &UnboundedSender<String>,
+    cid: u32,
+    args: serde_json::Value,
+) {
+    use base64::Engine;
+    let result = async {
+        reject_if_peer(pool)?;
+        require_content_author(upstream_players, session).await?;
+        let aspect = arg_str(&args, "aspect")?;
+        let faction = arg_str(&args, "faction")?;
+        let variant = arg_str(&args, "variant")?;
+        let channel = arg_str(&args, "channel")?;
+        let data_b64 = arg_str(&args, "data")?;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(data_b64.as_bytes())
+            .map_err(|e| format!("decode base64 data: {e}"))?;
+        pool.upload_master(&aspect, &faction, &variant, &channel, bytes).await
+    }
+    .await;
+    let reply = match result {
+        Ok(key) => {
+            info!(cid, %key, "master texture uploaded");
+            GateMsg::call_ok(cid)
+        }
+        Err(error) => {
+            warn!(cid, %error, "master upload rejected");
+            GateMsg::call_err(cid, error)
+        }
+    };
+    let _ = tx.send(reply);
 }
 
 /// Reject authoring on a **peer** gate. Only the content authority owns the

@@ -25,17 +25,44 @@ pub struct R2Store {
 }
 
 impl R2Store {
-    /// Build from env. All four core vars required, else `None` (no R2 writes —
-    /// the gate falls back to disk persistence): `R2_S3_ENDPOINT`, `R2_BUCKET`,
-    /// `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`. `R2_REGION` optional (default
-    /// `auto`, which R2 accepts).
+    /// The **content** store from env. All four core vars required, else `None`
+    /// (no R2 writes — the gate falls back to disk persistence): `R2_S3_ENDPOINT`,
+    /// `R2_BUCKET`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`. `R2_REGION`
+    /// optional (default `auto`, which R2 accepts).
     pub fn from_env() -> Option<Self> {
-        let var = |k: &str| std::env::var(k).ok().filter(|s| !s.is_empty());
-        let endpoint = var("R2_S3_ENDPOINT")?;
-        let bucket = var("R2_BUCKET")?;
-        let key_id = var("R2_ACCESS_KEY_ID")?;
-        let secret = var("R2_SECRET_ACCESS_KEY")?;
-        let region = var("R2_REGION").unwrap_or_else(|| "auto".to_string());
+        Self::build(
+            envv("R2_S3_ENDPOINT")?,
+            envv("R2_BUCKET")?,
+            envv("R2_ACCESS_KEY_ID")?,
+            envv("R2_SECRET_ACCESS_KEY")?,
+            envv("R2_REGION"),
+        )
+    }
+
+    /// The **texture** store from env — a SEPARATE bucket (masters live in a
+    /// different R2 bucket than DSL content, e.g. `resonantdust-assets`). Reuses
+    /// the content account's endpoint/creds/region by default, overridable per
+    /// field. `TEXTURE_R2_BUCKET` is required (else `None` → texture authoring
+    /// unconfigured): `TEXTURE_R2_BUCKET`, plus `TEXTURE_R2_ENDPOINT` /
+    /// `TEXTURE_R2_ACCESS_KEY_ID` / `TEXTURE_R2_SECRET_ACCESS_KEY` /
+    /// `TEXTURE_R2_REGION` falling back to the `R2_*` equivalents.
+    pub fn textures_from_env() -> Option<Self> {
+        let bucket = envv("TEXTURE_R2_BUCKET")?;
+        let endpoint = envv("TEXTURE_R2_ENDPOINT").or_else(|| envv("R2_S3_ENDPOINT"))?;
+        let key_id = envv("TEXTURE_R2_ACCESS_KEY_ID").or_else(|| envv("R2_ACCESS_KEY_ID"))?;
+        let secret = envv("TEXTURE_R2_SECRET_ACCESS_KEY").or_else(|| envv("R2_SECRET_ACCESS_KEY"))?;
+        let region = envv("TEXTURE_R2_REGION").or_else(|| envv("R2_REGION"));
+        Self::build(endpoint, bucket, key_id, secret, region)
+    }
+
+    fn build(
+        endpoint: String,
+        bucket: String,
+        key_id: String,
+        secret: String,
+        region: Option<String>,
+    ) -> Option<Self> {
+        let region = region.unwrap_or_else(|| "auto".to_string());
         let endpoint = endpoint.trim_end_matches('/').to_string();
         let host = endpoint
             .split_once("://")
@@ -128,6 +155,11 @@ impl R2Store {
         let k_signing = hmac(&k_service, b"aws4_request");
         hex::encode(hmac(&k_signing, string_to_sign.as_bytes()))
     }
+}
+
+/// A non-empty env var, or `None`.
+fn envv(key: &str) -> Option<String> {
+    std::env::var(key).ok().filter(|s| !s.is_empty())
 }
 
 fn hmac(key: &[u8], data: &[u8]) -> Vec<u8> {

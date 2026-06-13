@@ -126,6 +126,11 @@ pub struct Pool {
     /// in R2 — `Some` when R2 write creds are configured. Authored sources are
     /// written here (so they're durable + propagate); `None` → persist to disk.
     r2_store: Option<Arc<crate::s3::R2Store>>,
+    /// The S3 store for master TEXTURE uploads — a SEPARATE bucket from content
+    /// (masters live in e.g. `resonantdust-assets`). `Some` when `TEXTURE_R2_*`
+    /// (or the shared `R2_*`) creds are configured; `None` → texture authoring is
+    /// rejected (there's no disk fallback — masters belong in the asset bucket).
+    texture_store: Option<Arc<crate::s3::R2Store>>,
 }
 
 impl Pool {
@@ -133,6 +138,7 @@ impl Pool {
         cfg: GateConfig,
         content: crate::content::LoadedContent,
         r2_store: Option<Arc<crate::s3::R2Store>>,
+        texture_store: Option<Arc<crate::s3::R2Store>>,
     ) -> Self {
         Self {
             cfg,
@@ -143,6 +149,7 @@ impl Pool {
             clients: Mutex::new(Vec::new()),
             observers: Mutex::new(HashMap::new()),
             r2_store,
+            texture_store,
         }
     }
 
@@ -262,6 +269,45 @@ impl Pool {
     /// broadcasts `content_changed` to its own clients.
     pub fn swap_content(&self, next: crate::content::LoadedContent) {
         *self.content.write().unwrap() = Arc::new(next);
+    }
+
+    /// Write an edited master texture channel to the texture R2 bucket at
+    /// `textures/master/<aspect>/<faction>/<variant>.<channel>.png` — the in-app
+    /// art editor's "save master" path, mirroring `add_content` for DSL. Validates
+    /// the channel + path segments (no traversal) + a PNG magic sniff, then PUTs.
+    /// Returns the written key. Masters are the LOD source, not what the game
+    /// renders, so there's no broadcast here — `bin/art lod` regenerates the LODs.
+    pub async fn upload_master(
+        &self,
+        aspect: &str,
+        faction: &str,
+        variant: &str,
+        channel: &str,
+        bytes: Vec<u8>,
+    ) -> Result<String, String> {
+        const CHANNELS: [&str; 4] = ["diffuse", "albedo", "normal", "emissive"];
+        if !CHANNELS.contains(&channel) {
+            return Err(format!("bad channel {channel:?} (diffuse|albedo|normal|emissive)"));
+        }
+        // Path-segment safety: alnum/_/-/. only, and no `..` — the segments land
+        // in an object key, so reject anything that could escape the prefix.
+        for (label, seg) in [("aspect", aspect), ("faction", faction), ("variant", variant)] {
+            let ok = !seg.is_empty()
+                && !seg.contains("..")
+                && seg.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'));
+            if !ok {
+                return Err(format!("bad {label} {seg:?} (alnum / _ - . only, no `..`)"));
+            }
+        }
+        if bytes.len() < 8 || bytes[..8] != [0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'] {
+            return Err("payload is not a PNG".to_string());
+        }
+        let store = self.texture_store.as_ref().ok_or_else(|| {
+            "texture authoring not configured (set TEXTURE_R2_BUCKET + R2 creds)".to_string()
+        })?;
+        let key = format!("textures/master/{aspect}/{faction}/{variant}.{channel}.png");
+        store.put(&key, &bytes).await?;
+        Ok(key)
     }
 
     /// The content-authority URL if this gate is a **peer** (`Some`), or `None`

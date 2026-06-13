@@ -29,6 +29,8 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 sha2 = "0.10"
 hmac = "0.12"
 hex = "0.4"
+# Decode base64 master-texture uploads (the art editor ships PNGs over the ws call).
+base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 # Upstream client to the SpacetimeDB shards. Must match the generator that
 # produced src/bindings/ (spacetime cli 2.3.0).

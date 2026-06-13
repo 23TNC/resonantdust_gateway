@@ -58,6 +58,13 @@ async fn main() {
     // ALSO the read/poll source — strongly consistent, so the gate's own poll
     // reads back exactly what it authored (no public-CDN revert race).
     let r2_store = s3::R2Store::from_env().map(Arc::new);
+    // Master-texture writes target a SEPARATE bucket (the asset bucket), so the
+    // art editor's "save master" can persist edited PNGs. Independent of the
+    // content store — either can be configured without the other.
+    let texture_store = s3::R2Store::textures_from_env().map(Arc::new);
+    if texture_store.is_some() {
+        tracing::info!("texture authoring: enabled (R2)");
+    }
     // The authority's read source: S3 if authoring, else the public HTTP base, else
     // None (disk). `r2_store` is cloned in so it can also serve writes via the Pool.
     let content_src = match (&r2_store, &cfg.content_base_url) {
@@ -85,7 +92,7 @@ async fn main() {
             fetch_authority_content(url).await
         }
     };
-    let pool = Arc::new(connections::Pool::new(cfg, content, r2_store));
+    let pool = Arc::new(connections::Pool::new(cfg, content, r2_store, texture_store));
 
     // A peer keeps its in-memory corpus in sync by polling the authority. An
     // object-store-backed authority keeps ITS corpus in sync by polling the store —
