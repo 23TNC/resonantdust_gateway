@@ -157,7 +157,9 @@ async fn run(socket: WebSocket, pool: Arc<Pool>, conn_id: u64) {
                 biased; // prefer draining real traffic over the keepalive
                 msg = rx.recv() => match msg {
                     Some(m) => {
-                        if sink.send(Message::Text(m.into())).await.is_err() {
+                        // Binary frame: the wire is bytes now (JSON-over-bytes here;
+                        // GateMsg flips to postcard in a later phase).
+                        if sink.send(Message::Binary(m.into_bytes().into())).await.is_err() {
                             break;
                         }
                         idle.reset(); // traffic flowed → push the keepalive out
@@ -166,7 +168,7 @@ async fn run(socket: WebSocket, pool: Arc<Pool>, conn_id: u64) {
                 },
                 _ = idle.tick() => {
                     let frame = GateMsg::Time { server_micros: now_micros() }.to_json();
-                    if sink.send(Message::Text(frame.into())).await.is_err() {
+                    if sink.send(Message::Binary(frame.into_bytes().into())).await.is_err() {
                         break;
                     }
                 }
@@ -221,7 +223,9 @@ async fn run(socket: WebSocket, pool: Arc<Pool>, conn_id: u64) {
                     }
                 };
                 match msg {
-                    Message::Text(text) => match serde_json::from_str::<ClientMsg>(&text) {
+                    // Binary frame: the wire is bytes now. `ClientMsg` is still
+                    // JSON-over-bytes here (postcard flips it in a later phase).
+                    Message::Binary(bytes) => match serde_json::from_slice::<ClientMsg>(&bytes) {
                         Ok(cmsg) => {
                             handle(
                                 &pool,
@@ -247,7 +251,7 @@ async fn run(socket: WebSocket, pool: Arc<Pool>, conn_id: u64) {
                         }
                     },
                     Message::Close(_) => break,
-                    Message::Binary(_) | Message::Ping(_) | Message::Pong(_) => {}
+                    Message::Text(_) | Message::Ping(_) | Message::Pong(_) => {}
                 }
             }
             _ = promise_poll.tick() => {
