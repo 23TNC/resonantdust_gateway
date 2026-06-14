@@ -1136,10 +1136,35 @@ async fn sdk_send_chat(
     finish_call(tx, cid, "send_chat_message", dispatch, done_rx).await;
 }
 
+/// Dispatch a worldgen reducer (`request_zone`/`ensure_region`) via the SDK
+/// binding (BSATN), fire-and-forget — the true outcome lands on the regions
+/// subscription (the promise resolves there), so the caller only needs the
+/// dispatch result. Returns the SDK send error as a String on failure.
+fn sdk_worldgen(
+    regions: Option<&Arc<bindings::shard::DbConnection>>,
+    reducer: &str,
+    args: &serde_json::Value,
+) -> Result<(), String> {
+    use bindings::shard::{ensure_region, request_zone};
+    let conn = regions.ok_or_else(|| "regions upstream not connected".to_string())?;
+    let u = |k: &str| args.get(k).and_then(serde_json::Value::as_u64).unwrap_or(0);
+    match reducer {
+        "request_zone" => conn
+            .reducers
+            .request_zone(u("client_time_ms"), u("macro_zone"), vec_u64(args, "tiles"))
+            .map_err(|e| e.to_string()),
+        "ensure_region" => conn
+            .reducers
+            .ensure_region(u("client_time_ms"), u("macro_zone"), u("distance") as u16)
+            .map_err(|e| e.to_string()),
+        other => Err(format!("sdk_worldgen: unexpected reducer {other}")),
+    }
+}
+
 async fn relay_call(
     pool: &Arc<Pool>,
     cards: Option<&Arc<bindings::shard::DbConnection>>,
-    _regions: Option<&Arc<bindings::shard::DbConnection>>,
+    regions: Option<&Arc<bindings::shard::DbConnection>>,
     chat: Option<&Arc<bindings::chat::DbConnection>>,
     _players: Option<&Arc<bindings::players::DbConnection>>,
     session: &tokio::sync::Mutex<Option<u32>>,
@@ -1351,19 +1376,17 @@ async fn relay_call(
             let _ = tx.send(promises.accept(cid, key, PROMISE_TIMEOUT, now, resolve));
             return;
         }
-        let reply = match crate::connections::http_client().post(&url).json(&args).send().await {
-            Ok(resp) if resp.status().is_success() => {
+        // SDK dispatch (BSATN). The true outcome lands on the regions subscription
+        // (the promise resolves there) — we only need the call to have been SENT,
+        // so a successful dispatch accepts the promise; a send error is a CallErr.
+        match sdk_worldgen(regions, reducer, &args) {
+            Ok(()) => {
                 let _ = tx.send(promises.accept(cid, key, PROMISE_TIMEOUT, now, resolve));
-                return;
             }
-            Ok(resp) => {
-                let code = resp.status();
-                let body = resp.text().await.unwrap_or_default();
-                GateMsg::call_err(cid, format!("{code}: {body}"))
+            Err(e) => {
+                let _ = tx.send(GateMsg::call_err(cid, format!("{reducer}: {e}")));
             }
-            Err(err) => GateMsg::call_err(cid, err.to_string()),
-        };
-        let _ = tx.send(reply);
+        }
         return;
     }
 
