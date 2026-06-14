@@ -1074,11 +1074,73 @@ async fn sdk_move_cards(
     finish_call(tx, cid, "move_cards", dispatch, done_rx).await;
 }
 
+/// `move_soul` via the SDK binding — P4. The gate has injected `arrival_ms`
+/// (re-derived from speed + tile costs) above; `dest` rebuilds the `TilePoint`
+/// the client sent as a nested object.
+async fn sdk_move_soul(
+    cards: Option<&Arc<bindings::shard::DbConnection>>,
+    tx: &UnboundedSender<Vec<u8>>,
+    cid: u32,
+    args: &serde_json::Value,
+) {
+    use bindings::shard::move_soul;
+    let Some(conn) = cards else {
+        let _ = tx.send(GateMsg::call_err(cid, "move_soul: cards upstream not connected".to_string()));
+        return;
+    };
+    let u = |k: &str| args.get(k).and_then(serde_json::Value::as_u64).unwrap_or(0);
+    let i = |k: &str| args.get(k).and_then(serde_json::Value::as_i64).unwrap_or(0);
+    let d = |k: &str| args.get("dest").and_then(|d| d.get(k)).and_then(serde_json::Value::as_u64).unwrap_or(0);
+    let dest = bindings::shard::TilePoint {
+        surface: d("surface") as u8,
+        macro_zone: d("macro_zone"),
+        micro_location: d("micro_location") as u32,
+    };
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel::<Vec<u8>>();
+    let dispatch = conn.reducers.move_soul_then(
+        u("client_time_ms"),
+        u("caller_player_id") as u32,
+        u("soul_id") as u32,
+        u("soul_def") as u16,
+        i("from_q") as i32,
+        i("from_r") as i32,
+        dest,
+        u("depart_ms"),
+        u("arrival_ms"),
+        move |_ctx, res| { let _ = done_tx.send(reply_for(cid, "move_soul", res)); },
+    );
+    finish_call(tx, cid, "move_soul", dispatch, done_rx).await;
+}
+
+/// `send_chat_message` via the SDK binding — P4. No gate injection; chat db.
+async fn sdk_send_chat(
+    chat: Option<&Arc<bindings::chat::DbConnection>>,
+    tx: &UnboundedSender<Vec<u8>>,
+    cid: u32,
+    args: &serde_json::Value,
+) {
+    use bindings::chat::send_chat_message;
+    let Some(conn) = chat else {
+        let _ = tx.send(GateMsg::call_err(cid, "send_chat_message: chat upstream not connected".to_string()));
+        return;
+    };
+    let s = |k: &str| args.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let u = |k: &str| args.get(k).and_then(serde_json::Value::as_u64).unwrap_or(0);
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel::<Vec<u8>>();
+    let dispatch = conn.reducers.send_chat_message_then(
+        u("sender_player_id") as u32,
+        s("sender_name"),
+        s("body"),
+        move |_ctx, res| { let _ = done_tx.send(reply_for(cid, "send_chat_message", res)); },
+    );
+    finish_call(tx, cid, "send_chat_message", dispatch, done_rx).await;
+}
+
 async fn relay_call(
     pool: &Arc<Pool>,
     cards: Option<&Arc<bindings::shard::DbConnection>>,
     _regions: Option<&Arc<bindings::shard::DbConnection>>,
-    _chat: Option<&Arc<bindings::chat::DbConnection>>,
+    chat: Option<&Arc<bindings::chat::DbConnection>>,
     _players: Option<&Arc<bindings::players::DbConnection>>,
     session: &tokio::sync::Mutex<Option<u32>>,
     promises: &mut crate::promise::Promises,
@@ -1244,6 +1306,14 @@ async fn relay_call(
     }
     if reducer == "move_cards" {
         sdk_move_cards(cards, tx, cid, &args).await;
+        return;
+    }
+    if reducer == "move_soul" {
+        sdk_move_soul(cards, tx, cid, &args).await;
+        return;
+    }
+    if reducer == "send_chat_message" {
+        sdk_send_chat(chat, tx, cid, &args).await;
         return;
     }
     // Route the reducer to the database that owns it. The relay is anonymous —
