@@ -131,7 +131,17 @@ pub struct Pool {
     /// (or the shared `R2_*`) creds are configured; `None` → texture authoring is
     /// rejected (there's no disk fallback — masters belong in the asset bucket).
     texture_store: Option<Arc<crate::s3::R2Store>>,
+    /// The newest build-version snapshot (`versions.json`) the build host has
+    /// pushed via `PUT /versions`. Served back as `latest` on `GET /versions` so a
+    /// client can compare its baked bundle AND this gate's baked snapshot against
+    /// the freshest deployed build — a source of truth independent of any one
+    /// running binary. Seeded from R2 (`meta/versions.json`) at startup when a
+    /// content store is configured, so a freshly restarted gate still has it.
+    latest_versions: RwLock<Option<String>>,
 }
+
+/// R2 key (under the content prefix) for the pushed build-version ledger.
+const LATEST_VERSIONS_KEY: &str = "meta/versions.json";
 
 impl Pool {
     pub fn new(
@@ -150,7 +160,42 @@ impl Pool {
             observers: Mutex::new(HashMap::new()),
             r2_store,
             texture_store,
+            latest_versions: RwLock::new(None),
         }
+    }
+
+    /// Seed the `latest` build-version snapshot from R2 at startup (best-effort).
+    /// A no-op when no content store is configured (local disk/HTTP envs keep
+    /// `latest` empty until the build host pushes one via `PUT /versions`).
+    pub async fn seed_latest_versions(&self) {
+        let Some(store) = &self.r2_store else { return };
+        match store.get(LATEST_VERSIONS_KEY).await {
+            Ok(json) => {
+                tracing::info!("versions: seeded `latest` from R2 ({} bytes)", json.len());
+                *self.latest_versions.write().unwrap() = Some(json);
+            }
+            // Absent on first deploy (404) — not an error; the next push creates it.
+            Err(err) => tracing::info!(%err, "versions: no `latest` in R2 yet"),
+        }
+    }
+
+    /// The newest pushed build-version snapshot, or `None` if none seen yet.
+    pub fn latest_versions(&self) -> Option<String> {
+        self.latest_versions.read().unwrap().clone()
+    }
+
+    /// Record the build host's freshest `versions.json` (`PUT /versions`): keep it
+    /// in memory for `GET /versions` and, when a content store is configured,
+    /// persist it to R2 so a restarted gate re-seeds it. Persist failure is fatal
+    /// to the request (the in-memory copy is only set on success, so a retry is
+    /// clean) — returns the byte count stored on success.
+    pub async fn set_latest_versions(&self, json: String) -> Result<usize, String> {
+        let n = json.len();
+        if let Some(store) = &self.r2_store {
+            store.put(LATEST_VERSIONS_KEY, json.as_bytes()).await?;
+        }
+        *self.latest_versions.write().unwrap() = Some(json);
+        Ok(n)
     }
 
     /// Record that `player` has one more card-sub covering `zone`. Returns the new

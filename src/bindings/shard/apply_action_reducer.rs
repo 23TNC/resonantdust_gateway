@@ -24,6 +24,7 @@ pub(super) struct ApplyActionArgs {
     pub create_owners: Vec::<u32>,
     pub create_distances: Vec::<u16>,
     pub create_stocks: Vec::<u32>,
+    pub create_tags: Vec::<u8>,
     pub unlock_targets: Vec::<u32>,
     pub unlock_blueprints: Vec::<u16>,
     pub stat_souls: Vec::<u32>,
@@ -52,6 +53,7 @@ impl From<ApplyActionArgs> for super::Reducer {
             create_owners: args.create_owners,
             create_distances: args.create_distances,
             create_stocks: args.create_stocks,
+            create_tags: args.create_tags,
             unlock_targets: args.unlock_targets,
             unlock_blueprints: args.unlock_blueprints,
             stat_souls: args.stat_souls,
@@ -94,6 +96,7 @@ create_macro_zones: Vec::<u64>,
 create_owners: Vec::<u32>,
 create_distances: Vec::<u16>,
 create_stocks: Vec::<u32>,
+create_tags: Vec::<u8>,
 unlock_targets: Vec::<u32>,
 unlock_blueprints: Vec::<u16>,
 stat_souls: Vec::<u32>,
@@ -107,7 +110,7 @@ reroot_macro_zones: Vec::<u64>,
 reroot_micro_locations: Vec::<u32>,
 reroot_stack_states: Vec::<u8>,
 ) -> __sdk::Result<()> {
-        self.apply_action_then(now_ms, completion_ms, bound_ids, bound_masks, destroy_ids, create_defs, create_surfaces, create_macro_zones, create_owners, create_distances, create_stocks, unlock_targets, unlock_blueprints, stat_souls, stat_fields, stat_bytes, stat_deltas, stock_card_ids, stock_values, reroot_ids, reroot_macro_zones, reroot_micro_locations, reroot_stack_states,  |_, _| {})
+        self.apply_action_then(now_ms, completion_ms, bound_ids, bound_masks, destroy_ids, create_defs, create_surfaces, create_macro_zones, create_owners, create_distances, create_stocks, create_tags, unlock_targets, unlock_blueprints, stat_souls, stat_fields, stat_bytes, stat_deltas, stock_card_ids, stock_values, reroot_ids, reroot_macro_zones, reroot_micro_locations, reroot_stack_states,  |_, _| {})
     }
 
     /// Request that the remote module invoke the reducer `apply_action` to run as soon as possible,
@@ -129,6 +132,7 @@ create_macro_zones: Vec::<u64>,
 create_owners: Vec::<u32>,
 create_distances: Vec::<u16>,
 create_stocks: Vec::<u32>,
+create_tags: Vec::<u8>,
 unlock_targets: Vec::<u32>,
 unlock_blueprints: Vec::<u16>,
 stat_souls: Vec::<u32>,
@@ -162,6 +166,7 @@ create_macro_zones: Vec::<u64>,
 create_owners: Vec::<u32>,
 create_distances: Vec::<u16>,
 create_stocks: Vec::<u32>,
+create_tags: Vec::<u8>,
 unlock_targets: Vec::<u32>,
 unlock_blueprints: Vec::<u16>,
 stat_souls: Vec::<u32>,
@@ -179,7 +184,7 @@ reroot_stack_states: Vec::<u8>,
             + Send
             + 'static,
     ) -> __sdk::Result<()> {
-        self.imp.invoke_reducer_with_callback(ApplyActionArgs { now_ms, completion_ms, bound_ids, bound_masks, destroy_ids, create_defs, create_surfaces, create_macro_zones, create_owners, create_distances, create_stocks, unlock_targets, unlock_blueprints, stat_souls, stat_fields, stat_bytes, stat_deltas, stock_card_ids, stock_values, reroot_ids, reroot_macro_zones, reroot_micro_locations, reroot_stack_states,  }, callback)
+        self.imp.invoke_reducer_with_callback(ApplyActionArgs { now_ms, completion_ms, bound_ids, bound_masks, destroy_ids, create_defs, create_surfaces, create_macro_zones, create_owners, create_distances, create_stocks, create_tags, unlock_targets, unlock_blueprints, stat_souls, stat_fields, stat_bytes, stat_deltas, stock_card_ids, stock_values, reroot_ids, reroot_macro_zones, reroot_micro_locations, reroot_stack_states,  }, callback)
     }
 }
 

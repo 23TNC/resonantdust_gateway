@@ -204,6 +204,9 @@ pub async fn apply(
     let mut create_macro_zones: Vec<u64> = Vec::new();
     let mut create_owners: Vec<u32> = Vec::new();
     let mut create_stocks: Vec<u32> = Vec::new();
+    // Per-created-card transient tag (0 = none): set when a sibling create nests
+    // in this card, so the shard can register `tag -> minted id`.
+    let mut create_tags: Vec<u8> = Vec::new();
     // Per-product container disk radius, so a recipe output lands in a cell that
     // EXISTS in its target region disk (mirrors create_card's `distance`).
     let mut create_distances: Vec<u16> = Vec::new();
@@ -239,6 +242,8 @@ pub async fn apply(
                 surface,
                 macro_zone,
                 owner_id,
+                stock,
+                tag,
             } => {
                 let bundle = pool.content();
                 let packed_def = bundle
@@ -248,9 +253,11 @@ pub async fn apply(
                 create_surfaces.push(*surface);
                 create_macro_zones.push(*macro_zone);
                 create_owners.push(*owner_id);
-                // Seed the spawned card's per-instance stock u32 from its
-                // `@define` stock defaults (content-agnostic shard can't).
-                create_stocks.push(resonantdust_dsl::bridge::stock_default_u32(&bundle, def_key));
+                // The full per-card stock u32 — `@define` defaults with any
+                // same-plan `&handle.aspect.x set` already folded in by the rules
+                // translation, so a created card needs no follow-up SetCardStock.
+                create_stocks.push(*stock);
+                create_tags.push((*tag).min(u8::MAX as u32) as u8);
                 // A created stat card increments its soul's counter.
                 if let Some((field, byte)) = stat_slot(def_key) {
                     if let Some(soul) = owning_soul(snap, *owner_id) {
@@ -306,6 +313,13 @@ pub async fn apply(
     // exist in the target region disk. The gather snapshot isn't a reliable
     // source (the product's owner soul isn't always in it).
     for i in 0..create_owners.len() {
+        // A tag owner is a card created in THIS batch — its region doesn't exist
+        // to query yet; the shard places it unbounded into the freshly-minted
+        // owner's (empty) inventory. Real owners resolve their disk radius here.
+        if resonantdust_codec::packed::is_tag(create_owners[i]) {
+            create_distances.push(u16::MAX);
+            continue;
+        }
         let mz = resonantdust_codec::packed::pack_macro_zone_full(create_owners[i], create_surfaces[i], 0, 0);
         create_distances.push(crate::gather::region_distance(pool, mz).await);
     }
@@ -327,6 +341,7 @@ pub async fn apply(
             "create_owners": create_owners,
             "create_distances": create_distances,
             "create_stocks": create_stocks,
+            "create_tags": create_tags,
             "unlock_targets": unlock_targets,
             "unlock_blueprints": unlock_blueprints,
             "stat_souls": stat_souls,

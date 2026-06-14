@@ -21,6 +21,7 @@ mod ws;
 use std::sync::Arc;
 
 use axum::extract::State;
+use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::{routing::get, Router};
 use tokio::net::TcpListener;
@@ -102,6 +103,9 @@ async fn main() {
         }
     };
     let pool = Arc::new(connections::Pool::new(cfg, content, r2_store, texture_store));
+    // Re-seed the `latest` build-version snapshot from R2 (best-effort) so a
+    // freshly restarted gate serves it on `/versions` without waiting for a push.
+    pool.seed_latest_versions().await;
 
     // A peer keeps its in-memory corpus in sync by polling the authority. An
     // object-store-backed authority keeps ITS corpus in sync by polling the store —
@@ -121,8 +125,10 @@ async fn main() {
         .route("/content", get(serve_content))
         .route("/content-version", get(serve_content_version))
         // Build fingerprints: baked component hashes + the live content version,
-        // so a client can flag a stale deployment per-component.
-        .route("/versions", get(serve_versions))
+        // so a client can flag a stale deployment per-component. PUT pushes the
+        // build host's freshest snapshot (authority-only) so `latest` is an
+        // out-of-band truth, independent of any one running binary.
+        .route("/versions", get(serve_versions).put(put_versions))
         .with_state(pool);
 
     let listener = match TcpListener::bind(&listen).await {
@@ -326,10 +332,15 @@ async fn serve_content_version(State(pool): State<Arc<connections::Pool>>) -> im
 /// baked source hash. The client compares `server.components` against its own
 /// build-injected snapshot to spot a stale gate/shard.
 async fn serve_versions(State(pool): State<Arc<connections::Pool>>) -> impl IntoResponse {
+    // `latest` is the build host's freshest pushed snapshot (an out-of-band truth,
+    // so it can flag a stale gate too) — verbatim JSON object, or `null` if none
+    // has been pushed/seeded yet.
+    let latest = pool.latest_versions();
     let body = format!(
-        "{{\"server\":{server},\"content_live\":\"{live}\"}}",
+        "{{\"server\":{server},\"content_live\":\"{live}\",\"latest\":{latest}}}",
         server = VERSIONS_JSON.trim(),
         live = pool.content_version_hex(),
+        latest = latest.as_deref().map(str::trim).unwrap_or("null"),
     );
     (
         [
@@ -338,6 +349,29 @@ async fn serve_versions(State(pool): State<Arc<connections::Pool>>) -> impl Into
         ],
         body,
     )
+}
+
+/// `PUT /versions` — the build host pushes its freshly built `versions.json` here
+/// after a deploy (see `bin/redeploy`). The gate stores it (memory + R2 when a
+/// content store is configured) and echoes it back as `latest` on `GET`. Authority
+/// only: a peer gate has no canonical store and rejects, mirroring content
+/// authoring (clients/build hosts target the authority).
+async fn put_versions(
+    State(pool): State<Arc<connections::Pool>>,
+    body: String,
+) -> impl IntoResponse {
+    if pool.content_authority().is_some() {
+        return (StatusCode::FORBIDDEN, "versions: peer gate rejects push (target the authority)".to_string());
+    }
+    // Guard against a truncated/garbage push corrupting `latest` for everyone:
+    // it must parse as a JSON object before we store it.
+    if serde_json::from_str::<serde_json::Value>(&body).map(|v| !v.is_object()).unwrap_or(true) {
+        return (StatusCode::BAD_REQUEST, "versions: body must be a JSON object".to_string());
+    }
+    match pool.set_latest_versions(body).await {
+        Ok(n) => (StatusCode::OK, format!("versions: stored {n} bytes")),
+        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, format!("versions: store failed: {err}")),
+    }
 }
 
 /// Initialize `tracing` as the single logging path (the Rust analog of the
