@@ -395,7 +395,20 @@ async fn handle(
                 // texture R2 bucket. Same content-author gate as add/modify.
                 upload_master(pool, upstream_players, session, tx, cid, args).await;
             } else {
-                relay_call(pool, session, promises, tx, cid, reducer, args).await;
+                relay_call(
+                    pool,
+                    upstream_cards,
+                    upstream_regions,
+                    upstream_chat,
+                    upstream_players,
+                    session,
+                    promises,
+                    tx,
+                    cid,
+                    reducer,
+                    args,
+                )
+                .await;
             }
         }
     }
@@ -946,8 +959,70 @@ fn reply_content(
 
 // ---- writes: relay a reducer call to its owning database -------------
 
+/// How long to await a reducer's `_then` completion before giving up (the SDK
+/// event never arrived). Matches the old HTTP relay's effective ceiling.
+const REDUCER_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// `create_card` via the generated SDK binding (BSATN) — P4. Reads the gate-
+/// injected args `Value` field-by-field into the typed reducer call, then
+/// **awaits** the reducer's completion before returning — preserving the gate's
+/// per-connection serialization (the old HTTP `/call` relay blocked the message
+/// loop until the reducer committed; downstream ops rely on that ordering). The
+/// `_then` callback (fired on the connection's background loop) builds the
+/// CallOk/CallErr reply at commit time; a oneshot hands it back here to send.
+async fn sdk_create_card(
+    cards: Option<&Arc<bindings::shard::DbConnection>>,
+    tx: &UnboundedSender<Vec<u8>>,
+    cid: u32,
+    args: &serde_json::Value,
+) {
+    use bindings::shard::create_card; // the reducer extension trait
+    let Some(conn) = cards else {
+        let _ = tx.send(GateMsg::call_err(
+            cid,
+            "create_card: cards upstream not connected".to_string(),
+        ));
+        return;
+    };
+    let u = |k: &str| args.get(k).and_then(serde_json::Value::as_u64).unwrap_or(0);
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel::<Vec<u8>>();
+    let dispatch = conn.reducers.create_card_then(
+        u("client_time_ms"),
+        u("owner_id") as u32,
+        u("surface") as u8,
+        u("packed_definition") as u16,
+        u("stock") as u32,
+        u("macro_zone"),
+        u("q") as u8,
+        u("r") as u8,
+        u("distance") as u16,
+        move |_ctx, res| {
+            let reply = match res {
+                Ok(Ok(())) => GateMsg::call_ok(cid),
+                Ok(Err(e)) => GateMsg::call_err(cid, e),
+                Err(internal) => GateMsg::call_err(cid, format!("create_card: {internal}")),
+            };
+            let _ = done_tx.send(reply);
+        },
+    );
+    if let Err(e) = dispatch {
+        let _ = tx.send(GateMsg::call_err(cid, format!("create_card dispatch: {e}")));
+        return;
+    }
+    let reply = match tokio::time::timeout(REDUCER_CALL_TIMEOUT, done_rx).await {
+        Ok(Ok(reply)) => reply,
+        Ok(Err(_)) => GateMsg::call_err(cid, "create_card: completion callback dropped".to_string()),
+        Err(_) => GateMsg::call_err(cid, "create_card: reducer timed out".to_string()),
+    };
+    let _ = tx.send(reply);
+}
+
 async fn relay_call(
     pool: &Arc<Pool>,
+    cards: Option<&Arc<bindings::shard::DbConnection>>,
+    _regions: Option<&Arc<bindings::shard::DbConnection>>,
+    _chat: Option<&Arc<bindings::chat::DbConnection>>,
+    _players: Option<&Arc<bindings::players::DbConnection>>,
     session: &tokio::sync::Mutex<Option<u32>>,
     promises: &mut crate::promise::Promises,
     tx: &UnboundedSender<Vec<u8>>,
@@ -1103,6 +1178,12 @@ async fn relay_call(
                 }
             }
         }
+    }
+    // ── P4: SDK-bound reducers (BSATN) — converted one at a time; the rest fall
+    // through to the HTTP `/call` relay below. ──
+    if reducer == "create_card" {
+        sdk_create_card(cards, tx, cid, &args).await;
+        return;
     }
     // Route the reducer to the database that owns it. The relay is anonymous —
     // gate-called reducers trust their args (auth is the gate's job), so
