@@ -1107,23 +1107,40 @@ async fn relay_call(
             return;
         }
     };
+    let now = std::time::Instant::now();
     let url = format!("{}/v1/database/{}/call/{}", pool.server_uri(), db, reducer);
-    let reply = match crate::connections::http_client().post(&url).json(&args).send().await {
-        Ok(resp) if resp.status().is_success() => {
-            // A worldgen reducer's HTTP 200 only means "the reducer ran" — its real
-            // outcome (the zone materializing / the region coming into existence) is
-            // observed on the regions subscription, not in this response. Don't lie
-            // `call_ok`: ACCEPT a promise that resolves on the server-truth bit, so a
-            // silent no-op times out → the client retries instead of latching.
-            match worldgen_promise(reducer, &args) {
-                Some(resolve) => {
-                    let frame = promises.accept(cid, PROMISE_TIMEOUT, std::time::Instant::now(), resolve);
-                    let _ = tx.send(frame);
-                    return;
-                }
-                None => GateMsg::call_ok(cid),
-            }
+
+    // Worldgen reducers (`request_zone`/`ensure_region`) don't know their true
+    // outcome at HTTP-reply time — it's observed on the regions subscription. They
+    // ACCEPT a promise that resolves on the server-truth bit (so a silent no-op
+    // times out → the client retries instead of latching). DEDUP: if an identical
+    // request (same reducer + macro_zone) is already in flight or just resolved,
+    // skip the redundant shard POST and co-wait on the same result.
+    if let Some(resolve) = worldgen_promise(reducer, &args) {
+        let key = worldgen_key(reducer, &args);
+        if promises.is_duplicate(&key, now) {
+            let _ = tx.send(promises.accept(cid, key, PROMISE_TIMEOUT, now, resolve));
+            return;
         }
+        let reply = match crate::connections::http_client().post(&url).json(&args).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                let _ = tx.send(promises.accept(cid, key, PROMISE_TIMEOUT, now, resolve));
+                return;
+            }
+            Ok(resp) => {
+                let code = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                GateMsg::call_err(cid, format!("{code}: {body}"))
+            }
+            Err(err) => GateMsg::call_err(cid, err.to_string()),
+        };
+        let _ = tx.send(reply);
+        return;
+    }
+
+    // Everything else: the HTTP result IS the outcome.
+    let reply = match crate::connections::http_client().post(&url).json(&args).send().await {
+        Ok(resp) if resp.status().is_success() => GateMsg::call_ok(cid),
         Ok(resp) => {
             let code = resp.status();
             let body = resp.text().await.unwrap_or_default();
@@ -1132,6 +1149,16 @@ async fn relay_call(
         Err(err) => GateMsg::call_err(cid, err.to_string()),
     };
     let _ = tx.send(reply);
+}
+
+/// Dedup identity for a worldgen call — `"<reducer>:<macro_zone>"`.
+fn worldgen_key(reducer: &str, args: &serde_json::Value) -> String {
+    let mz = args
+        .get("macro_zone")
+        .or_else(|| args.get("macroZone"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    format!("{reducer}:{mz}")
 }
 
 /// Build the promise resolver for a worldgen reducer, or `None` for reducers whose

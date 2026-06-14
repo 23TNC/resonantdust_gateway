@@ -1,15 +1,15 @@
 {
-  "build": 39,
-  "generated": "2026-06-14T03:25:29Z",
+  "build": 45,
+  "generated": "2026-06-14T04:32:29Z",
   "components": {
-    "shared": { "hash": "b109d9a7454f5d7944d03691cb8791f0e043caabb49edbf589837a0aba35b526", "seq": 28, "ts": "2026-06-14T02:52:11Z" },
-    "shard": { "hash": "e0042719484126cd661754cde4fc423522ac902397b9be81364837489fbcc95b", "seq": 35, "ts": "2026-06-14T03:24:44Z" },
-    "players": { "hash": "12ef0839e49865569321a19ff77390cf176777c6cc97846d3fdd51ca27637aa2", "seq": 30, "ts": "2026-06-14T02:52:11Z" },
+    "shared": { "hash": "cf564907a0d252a65231fbe58752e8a4538b5952442490b67d58288176adc87c", "seq": 40, "ts": "2026-06-14T04:32:29Z" },
+    "shard": { "hash": "1c6ce27115a8b52e9cbb0845b82027a0afaa28b41aad1cfd5d6d2d947d32ecb3", "seq": 41, "ts": "2026-06-14T04:32:29Z" },
+    "players": { "hash": "61415fd46f7262cef4380d73fa7b00aad651a7c8588d5a9865ba751fe51b608a", "seq": 42, "ts": "2026-06-14T04:32:29Z" },
     "chat": { "hash": "327dc9fae578063b1728feafcc5ff92e811c67a1897ffadee7a8407cd5918aa7", "seq": 4, "ts": "2026-06-13T19:52:27Z" },
     "regionindex": { "hash": "88b165b5ce2062da6deb5d4a81355eb92bb89f18864941849e4b99eafb45b5c5", "seq": 5, "ts": "2026-06-13T19:52:27Z" },
-    "gate": { "hash": "88f3fb634e26b1dbc5c0eeadca283266b7ad910c65964c59c955629d6f71e96f", "seq": 39, "ts": "2026-06-14T03:25:29Z" },
+    "gate": { "hash": "9fb8727923b5d0efe0024d6f2dc6562807ebd70123e12b4438d7302ad9399451", "seq": 43, "ts": "2026-06-14T04:32:29Z" },
     "content": { "hash": "558b0a41d0a1a48a6a8133308bd9f3ebeabefc5fc179c3b1fc61a5aaff118be1", "seq": 14, "ts": "2026-06-13T20:18:22Z" },
-    "client": { "hash": "e527075703c2b55513f4ddb4e6b10a0aeb9b0a45de77ba8d2b734fcaf15ff068", "seq": 37, "ts": "2026-06-14T03:24:44Z" },
-    "view": { "hash": "e6b613abda3b74c498119620923516a18eafe69de21cd7696220df7827156e50", "seq": 38, "ts": "2026-06-14T03:24:44Z" }
+    "client": { "hash": "5645209ad658d819a8abb67df4f17fd45e427701363484d6a18814390ef479aa", "seq": 44, "ts": "2026-06-14T04:32:29Z" },
+    "view": { "hash": "79f41fd695749e1e89bcda81895b96cc85cce89aadf01891cd46931b3856b13b", "seq": 45, "ts": "2026-06-14T04:32:29Z" }
   }
 }
