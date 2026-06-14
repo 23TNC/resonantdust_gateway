@@ -959,17 +959,66 @@ fn reply_content(
 
 // ---- writes: relay a reducer call to its owning database -------------
 
+// ── P4 SDK-reducer-call plumbing (BSATN, replacing the HTTP `/call` relay) ──
+//
+// Each converted reducer reads its gate-injected args `Value` field-by-field into
+// the generated `X_then(args…, callback)` call, then **awaits** completion before
+// returning — preserving the gate's per-connection serialization (the old HTTP
+// relay blocked the message loop until the reducer committed; downstream ops rely
+// on that ordering). The `_then` callback fires on the connection's background
+// loop, builds the reply at commit time, and a oneshot hands it back to await.
+
 /// How long to await a reducer's `_then` completion before giving up (the SDK
 /// event never arrived). Matches the old HTTP relay's effective ceiling.
 const REDUCER_CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// `create_card` via the generated SDK binding (BSATN) — P4. Reads the gate-
-/// injected args `Value` field-by-field into the typed reducer call, then
-/// **awaits** the reducer's completion before returning — preserving the gate's
-/// per-connection serialization (the old HTTP `/call` relay blocked the message
-/// loop until the reducer committed; downstream ops rely on that ordering). The
-/// `_then` callback (fired on the connection's background loop) builds the
-/// CallOk/CallErr reply at commit time; a oneshot hands it back here to send.
+/// Map a reducer `_then` result → a CallOk/CallErr reply (stamped at commit time).
+/// Generic over the error type so it serves every db's bindings without naming
+/// the SDK's `InternalError` here.
+fn reply_for<E: std::fmt::Display>(
+    cid: u32,
+    reducer: &str,
+    res: Result<Result<(), String>, E>,
+) -> Vec<u8> {
+    match res {
+        Ok(Ok(())) => GateMsg::call_ok(cid),
+        Ok(Err(e)) => GateMsg::call_err(cid, e),
+        Err(internal) => GateMsg::call_err(cid, format!("{reducer}: {internal}")),
+    }
+}
+
+/// Await a dispatched reducer's completion (via the oneshot its callback resolves)
+/// and send the reply. `dispatch` is the SDK call's return (Err = the message
+/// never went out). Generic over the SDK error types so callers don't name them.
+async fn finish_call<E: std::fmt::Display>(
+    tx: &UnboundedSender<Vec<u8>>,
+    cid: u32,
+    reducer: &str,
+    dispatch: Result<(), E>,
+    done_rx: tokio::sync::oneshot::Receiver<Vec<u8>>,
+) {
+    if let Err(e) = dispatch {
+        let _ = tx.send(GateMsg::call_err(cid, format!("{reducer} dispatch: {e}")));
+        return;
+    }
+    let reply = match tokio::time::timeout(REDUCER_CALL_TIMEOUT, done_rx).await {
+        Ok(Ok(reply)) => reply,
+        Ok(Err(_)) => GateMsg::call_err(cid, format!("{reducer}: completion callback dropped")),
+        Err(_) => GateMsg::call_err(cid, format!("{reducer}: reducer timed out")),
+    };
+    let _ = tx.send(reply);
+}
+
+/// Pull a JSON array of integers from `args[key]` as a `Vec<u64>` (cast per field
+/// at the call site). Missing / non-array → empty.
+fn vec_u64(args: &serde_json::Value, key: &str) -> Vec<u64> {
+    args.get(key)
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(serde_json::Value::as_u64).collect())
+        .unwrap_or_default()
+}
+
+/// `create_card` via the generated SDK binding (BSATN) — P4.
 async fn sdk_create_card(
     cards: Option<&Arc<bindings::shard::DbConnection>>,
     tx: &UnboundedSender<Vec<u8>>,
@@ -978,10 +1027,7 @@ async fn sdk_create_card(
 ) {
     use bindings::shard::create_card; // the reducer extension trait
     let Some(conn) = cards else {
-        let _ = tx.send(GateMsg::call_err(
-            cid,
-            "create_card: cards upstream not connected".to_string(),
-        ));
+        let _ = tx.send(GateMsg::call_err(cid, "create_card: cards upstream not connected".to_string()));
         return;
     };
     let u = |k: &str| args.get(k).and_then(serde_json::Value::as_u64).unwrap_or(0);
@@ -996,25 +1042,36 @@ async fn sdk_create_card(
         u("q") as u8,
         u("r") as u8,
         u("distance") as u16,
-        move |_ctx, res| {
-            let reply = match res {
-                Ok(Ok(())) => GateMsg::call_ok(cid),
-                Ok(Err(e)) => GateMsg::call_err(cid, e),
-                Err(internal) => GateMsg::call_err(cid, format!("create_card: {internal}")),
-            };
-            let _ = done_tx.send(reply);
-        },
+        move |_ctx, res| { let _ = done_tx.send(reply_for(cid, "create_card", res)); },
     );
-    if let Err(e) = dispatch {
-        let _ = tx.send(GateMsg::call_err(cid, format!("create_card dispatch: {e}")));
+    finish_call(tx, cid, "create_card", dispatch, done_rx).await;
+}
+
+/// `move_cards` (batch reposition) via the SDK binding — P4. No gate injection;
+/// the client supplies `caller_player_id` + the parallel id/position arrays.
+async fn sdk_move_cards(
+    cards: Option<&Arc<bindings::shard::DbConnection>>,
+    tx: &UnboundedSender<Vec<u8>>,
+    cid: u32,
+    args: &serde_json::Value,
+) {
+    use bindings::shard::move_cards;
+    let Some(conn) = cards else {
+        let _ = tx.send(GateMsg::call_err(cid, "move_cards: cards upstream not connected".to_string()));
         return;
-    }
-    let reply = match tokio::time::timeout(REDUCER_CALL_TIMEOUT, done_rx).await {
-        Ok(Ok(reply)) => reply,
-        Ok(Err(_)) => GateMsg::call_err(cid, "create_card: completion callback dropped".to_string()),
-        Err(_) => GateMsg::call_err(cid, "create_card: reducer timed out".to_string()),
     };
-    let _ = tx.send(reply);
+    let u = |k: &str| args.get(k).and_then(serde_json::Value::as_u64).unwrap_or(0);
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel::<Vec<u8>>();
+    let dispatch = conn.reducers.move_cards_then(
+        u("client_time_ms"),
+        u("caller_player_id") as u32,
+        vec_u64(args, "card_ids").into_iter().map(|n| n as u32).collect(),
+        vec_u64(args, "macro_zones"),
+        vec_u64(args, "micro_locations").into_iter().map(|n| n as u32).collect(),
+        vec_u64(args, "stack_states").into_iter().map(|n| n as u8).collect(),
+        move |_ctx, res| { let _ = done_tx.send(reply_for(cid, "move_cards", res)); },
+    );
+    finish_call(tx, cid, "move_cards", dispatch, done_rx).await;
 }
 
 async fn relay_call(
@@ -1183,6 +1240,10 @@ async fn relay_call(
     // through to the HTTP `/call` relay below. ──
     if reducer == "create_card" {
         sdk_create_card(cards, tx, cid, &args).await;
+        return;
+    }
+    if reducer == "move_cards" {
+        sdk_move_cards(cards, tx, cid, &args).await;
         return;
     }
     // Route the reducer to the database that owns it. The relay is anonymous —
