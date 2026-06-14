@@ -1356,35 +1356,14 @@ async fn relay_call(
         sdk_send_chat(chat, tx, cid, &args).await;
         return;
     }
-    // Route the reducer to the database that owns it. The relay is anonymous —
-    // gate-called reducers trust their args (auth is the gate's job), so
-    // `ctx.sender` is immaterial and no bearer token is needed. `propose_action`
-    // and `claim_or_login` never reach here (intercepted in `handle`).
-    let db = match reducer {
-        "request_zone" | "ensure_region" => pool.regions_db(),
-        "create_card" | "place_card" | "move_cards" | "request_blueprint" | "move_soul" => {
-            pool.cards_db()
-        }
-        "send_chat_message" => pool.chat_db(),
-        "set_last_login" | "create_player" => pool.players_db(),
-        other => {
-            // Nothing routes to the retired `shard` monolith anymore.
-            let _ = tx.send(GateMsg::call_err(
-                cid,
-                format!("gate: no backing database for reducer {other:?}"),
-            ));
-            return;
-        }
-    };
     let now = std::time::Instant::now();
-    let url = format!("{}/v1/database/{}/call/{}", pool.server_uri(), db, reducer);
 
     // Worldgen reducers (`request_zone`/`ensure_region`) don't know their true
-    // outcome at HTTP-reply time — it's observed on the regions subscription. They
+    // outcome at dispatch time — it's observed on the regions subscription. They
     // ACCEPT a promise that resolves on the server-truth bit (so a silent no-op
     // times out → the client retries instead of latching). DEDUP: if an identical
     // request (same reducer + macro_zone) is already in flight or just resolved,
-    // skip the redundant shard POST and co-wait on the same result.
+    // skip the redundant dispatch and co-wait on the same result.
     if let Some(resolve) = worldgen_promise(reducer, &args) {
         let key = worldgen_key(reducer, &args);
         if promises.is_duplicate(&key, now) {
@@ -1405,17 +1384,15 @@ async fn relay_call(
         return;
     }
 
-    // Everything else: the HTTP result IS the outcome.
-    let reply = match crate::connections::http_client().post(&url).json(&args).send().await {
-        Ok(resp) if resp.status().is_success() => GateMsg::call_ok(cid),
-        Ok(resp) => {
-            let code = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            GateMsg::call_err(cid, format!("{code}: {body}"))
-        }
-        Err(err) => GateMsg::call_err(cid, err.to_string()),
-    };
-    let _ = tx.send(reply);
+    // Every reducer the client actually sends is SDK-converted above (relay +
+    // worldgen); `propose_action`/`claim_or_login` are intercepted in `handle`.
+    // `place_card` / `request_blueprint` / `set_last_login` / `create_player` are
+    // dead routes the client never sends, so anything reaching here is a bug, not
+    // an HTTP fallback.
+    let _ = tx.send(GateMsg::call_err(
+        cid,
+        format!("relay_call: reducer {reducer:?} has no SDK path (not relayed)"),
+    ));
 }
 
 /// Dedup identity for a worldgen call — `"<reducer>:<macro_zone>"`.

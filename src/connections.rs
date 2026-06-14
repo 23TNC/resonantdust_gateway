@@ -239,10 +239,6 @@ impl Pool {
         self.clients.lock().unwrap().retain(|tx| tx.send(msg.clone()).is_ok());
     }
 
-    pub fn config(&self) -> &GateConfig {
-        &self.cfg
-    }
-
     /// A snapshot of the current content bundle (the VM + defs the recipe
     /// pipeline runs). Cheap `Arc` clone; hold it for the duration of an action
     /// so the whole operation sees one consistent content version.
@@ -439,11 +435,6 @@ impl Pool {
         Some(conn)
     }
 
-    /// The base HTTP URL of the SpacetimeDB server (for write relays).
-    pub fn server_uri(&self) -> &str {
-        &self.cfg.uri
-    }
-
     /// Create a NEW, uncached per-client upstream to the `regions` shard, plus a
     /// oneshot that fires once it has connected. Each client WS gets its OWN
     /// upstream so subscriptions and the SDK row cache are isolated — a *shared*
@@ -493,26 +484,6 @@ impl Pool {
                 None
             }
         }
-    }
-
-    /// `regions` shard database name for reducer-call relays (shard 0 today).
-    pub fn regions_db(&self) -> String {
-        self.cfg.regions_db(0)
-    }
-
-    /// `cards` shard database name for reducer-call relays (shard 0 today).
-    pub fn cards_db(&self) -> String {
-        self.cfg.cards_db(0)
-    }
-
-    /// `chat` database name for reducer-call relays (single global feed).
-    pub fn chat_db(&self) -> String {
-        self.cfg.chat_db()
-    }
-
-    /// `players` auth-DB name for reducer-call relays (single instance today).
-    pub fn players_db(&self) -> String {
-        self.cfg.players_db()
     }
 
     /// Per-client upstream to the single `players` auth DB, mirroring
