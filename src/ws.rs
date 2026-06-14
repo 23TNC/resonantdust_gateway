@@ -376,7 +376,7 @@ async fn handle(
             // `propose_action` is no longer a relay — the gate validates the
             // recipe across shards and applies it via narrow reducer calls.
             if reducer == "propose_action" {
-                crate::propose::handle(pool, tx, cid, args).await;
+                crate::propose::handle(pool, upstream_cards, upstream_regions, tx, cid, args).await;
             } else if reducer == "claim_or_login" {
                 // Login establishes the gate-owned session (WS → player_id).
                 login_relay(pool, upstream_players, session, tx, cid, args).await;

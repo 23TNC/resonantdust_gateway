@@ -18,9 +18,7 @@
 //! effects are rejected upstream in the content planner; this never sees them.
 
 use std::collections::BTreeSet;
-
-use serde_json::{json, Value};
-use tracing::debug;
+use std::sync::Arc;
 
 use resonantdust_codec::packed::micro_loose_cell;
 use resonantdust_codec::plan::{ActionPlan, Effect, HoldKinds};
@@ -29,7 +27,6 @@ use crate::connections::Pool;
 use crate::gather::{Proposal, Snapshot};
 
 /// Single `cards` shard today (owner-sharding is future work).
-const CARDS_SHARD: u16 = 0;
 
 // Hold-kind bit positions — must match `shard::gate_api::hold_kind`.
 const K_TOUCH: u8 = 0;
@@ -115,29 +112,31 @@ fn tile_hold_mask(kinds: &HoldKinds) -> u8 {
 /// `now_ms + plan.duration_ms()`.
 pub async fn apply(
     pool: &Pool,
+    cards: Option<&Arc<crate::bindings::shard::DbConnection>>,
+    regions: Option<&Arc<crate::bindings::shard::DbConnection>>,
     snap: &Snapshot,
     proposal: &Proposal,
     plan: &ActionPlan,
     now_ms: u64,
 ) -> Result<(), String> {
+    use crate::bindings::shard::{apply_action, apply_action_tile, claim_pending};
     let completion_ms = now_ms + plan.duration_ms();
-    let cards_db = pool.config().cards_db(CARDS_SHARD);
-    let client = crate::connections::http_client().clone();
+    let cards_conn = cards.ok_or_else(|| "apply: cards upstream not connected".to_string())?;
 
     // 1. Dedup gate — gate-only (`pending_actions` is never relayed to clients).
-    call(
-        &client,
-        pool,
-        &cards_db,
-        "claim_pending",
-        json!({
-            "recipe_id": proposal.recipe_id,
-            "root": proposal.root,
-            "bindings": proposal.bindings,
-            "completion_ms": completion_ms,
-        }),
-    )
-    .await?;
+    {
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
+        let dispatch = cards_conn.reducers.claim_pending_then(
+            proposal.recipe_id,
+            proposal.root,
+            proposal.bindings.clone(),
+            completion_ms,
+            move |_ctx, res| {
+                let _ = done_tx.send(res.unwrap_or_else(|e| Err(format!("internal: {e}"))));
+            },
+        );
+        await_result("claim_pending", dispatch, done_rx).await?;
+    }
 
     // 2. Tile (region DB) — one transaction, when the recipe targets the
     //    synthetic tile. First, so the exclusive-cut guard fails fast.
@@ -153,26 +152,25 @@ pub async fn apply(
                 stock_deltas.push(*delta);
             }
         }
-        let regions_db = pool.regions_db();
-        call(
-            &client,
-            pool,
-            &regions_db,
-            "apply_action_tile",
-            json!({
-                "now_ms": now_ms,
-                "completion_ms": completion_ms,
-                "surface": proposal.surface,
-                "macro_zone": proposal.macro_zone,
-                "q": q,
-                "r": r,
-                "hold_mask": tile_hold_mask(kinds),
-                "stock_slots": stock_slots,
-                "stock_ops": stock_ops,
-                "stock_deltas": stock_deltas,
-            }),
-        )
-        .await?;
+        let regions_conn =
+            regions.ok_or_else(|| "apply: regions upstream not connected".to_string())?;
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
+        let dispatch = regions_conn.reducers.apply_action_tile_then(
+            now_ms,
+            completion_ms,
+            proposal.surface,
+            proposal.macro_zone,
+            q,
+            r,
+            tile_hold_mask(kinds),
+            stock_slots,
+            stock_ops,
+            stock_deltas,
+            move |_ctx, res| {
+                let _ = done_tx.send(res.unwrap_or_else(|e| Err(format!("internal: {e}"))));
+            },
+        );
+        await_result("apply_action_tile", dispatch, done_rx).await?;
     }
 
     // 3. Cards DB — one transaction. Bound set = root + bindings (deduped, minus
@@ -324,62 +322,55 @@ pub async fn apply(
         create_distances.push(crate::gather::region_distance(pool, mz).await);
     }
 
-    call(
-        &client,
-        pool,
-        &cards_db,
-        "apply_action",
-        json!({
-            "now_ms": now_ms,
-            "completion_ms": completion_ms,
-            "bound_ids": bound_ids,
-            "bound_masks": bound_masks,
-            "destroy_ids": destroy_ids,
-            "create_defs": create_defs,
-            "create_surfaces": create_surfaces,
-            "create_macro_zones": create_macro_zones,
-            "create_owners": create_owners,
-            "create_distances": create_distances,
-            "create_stocks": create_stocks,
-            "create_tags": create_tags,
-            "unlock_targets": unlock_targets,
-            "unlock_blueprints": unlock_blueprints,
-            "stat_souls": stat_souls,
-            "stat_fields": stat_fields,
-            "stat_bytes": stat_bytes,
-            "stat_deltas": stat_deltas,
-            "stock_card_ids": stock_card_ids,
-            "stock_values": stock_values,
-            "reroot_ids": reroot_ids,
-            "reroot_macro_zones": reroot_macro_zones,
-            "reroot_micro_locations": reroot_micro_locations,
-            "reroot_stack_states": reroot_stack_states,
-        }),
-    )
-    .await?;
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
+    let dispatch = cards_conn.reducers.apply_action_then(
+        now_ms,
+        completion_ms,
+        bound_ids,
+        bound_masks,
+        destroy_ids,
+        create_defs,
+        create_surfaces,
+        create_macro_zones,
+        create_owners,
+        create_distances,
+        create_stocks,
+        create_tags,
+        unlock_targets,
+        unlock_blueprints,
+        stat_souls,
+        stat_fields,
+        stat_bytes,
+        stat_deltas,
+        stock_card_ids,
+        stock_values,
+        reroot_ids,
+        reroot_macro_zones,
+        reroot_micro_locations,
+        reroot_stack_states,
+        move |_ctx, res| {
+            let _ = done_tx.send(res.unwrap_or_else(|e| Err(format!("internal: {e}"))));
+        },
+    );
+    await_result("apply_action", dispatch, done_rx).await?;
 
     Ok(())
 }
 
-/// POST one reducer call to `db`'s HTTP `/call`. Anonymous — gate-called
-/// reducers trust their args, so `ctx.sender` is immaterial. u64 args ride as
-/// JSON numbers (lossless server-side).
-async fn call(
-    client: &reqwest::Client,
-    pool: &Pool,
-    db: &str,
+/// Await a gate-driven reducer's completion, returning its result for `?`
+/// propagation (these apply steps are sequential — each must commit before the
+/// next). `dispatch` is the SDK send result; the `_then` callback resolves
+/// `done_rx` with the reducer's own `Result`.
+async fn await_result<E: std::fmt::Display>(
     reducer: &str,
-    args: Value,
+    dispatch: Result<(), E>,
+    done_rx: tokio::sync::oneshot::Receiver<Result<(), String>>,
 ) -> Result<(), String> {
-    let url = format!("{}/v1/database/{}/call/{}", pool.server_uri(), db, reducer);
-    debug!(reducer, %db, "apply call");
-    match client.post(&url).json(&args).send().await {
-        Ok(resp) if resp.status().is_success() => Ok(()),
-        Ok(resp) => {
-            let code = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            Err(format!("{reducer}: {code}: {body}"))
-        }
-        Err(err) => Err(format!("{reducer}: {err}")),
+    dispatch.map_err(|e| format!("{reducer} dispatch: {e}"))?;
+    match tokio::time::timeout(std::time::Duration::from_secs(5), done_rx).await {
+        Ok(Ok(r)) => r.map_err(|e| format!("{reducer}: {e}")),
+        Ok(Err(_)) => Err(format!("{reducer}: completion callback dropped")),
+        Err(_) => Err(format!("{reducer}: reducer timed out")),
     }
 }
+

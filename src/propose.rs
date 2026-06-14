@@ -23,8 +23,18 @@ use resonantdust_rules::dsl_recipe;
 use resonantdust_protocol::protocol::GateMsg;
 
 /// Handle a `propose_action` call: run the pipeline and reply CallOk/CallErr.
-pub async fn handle(pool: &Arc<Pool>, tx: &UnboundedSender<Vec<u8>>, cid: u32, args: Value) {
-    let reply = match propose(pool, args).await {
+/// `cards`/`regions` are this client's upstream SDK connections — the apply step
+/// drives its narrow reducer calls (claim_pending / apply_action_tile /
+/// apply_action) through them (BSATN).
+pub async fn handle(
+    pool: &Arc<Pool>,
+    cards: Option<&Arc<crate::bindings::shard::DbConnection>>,
+    regions: Option<&Arc<crate::bindings::shard::DbConnection>>,
+    tx: &UnboundedSender<Vec<u8>>,
+    cid: u32,
+    args: Value,
+) {
+    let reply = match propose(pool, cards, regions, args).await {
         Ok(()) => GateMsg::call_ok(cid),
         Err(error) => {
             warn!(cid, %error, "propose_action rejected");
@@ -34,7 +44,12 @@ pub async fn handle(pool: &Arc<Pool>, tx: &UnboundedSender<Vec<u8>>, cid: u32, a
     let _ = tx.send(reply);
 }
 
-async fn propose(pool: &Pool, args: Value) -> Result<(), String> {
+async fn propose(
+    pool: &Pool,
+    cards: Option<&Arc<crate::bindings::shard::DbConnection>>,
+    regions: Option<&Arc<crate::bindings::shard::DbConnection>>,
+    args: Value,
+) -> Result<(), String> {
     let proposal = Proposal {
         recipe_id: get_u64(&args, "recipe_id")? as u16,
         surface: get_u64(&args, "surface")? as u8,
@@ -99,7 +114,7 @@ async fn propose(pool: &Pool, args: Value) -> Result<(), String> {
     )?;
 
     // Apply across the shards (future-stamped at completion).
-    apply::apply(pool, &snap, &proposal, &plan, now_ms).await
+    apply::apply(pool, cards, regions, &snap, &proposal, &plan, now_ms).await
 }
 
 /// Backward grace: reject a proposal whose `client_time_ms` is more than this
