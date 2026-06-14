@@ -691,7 +691,7 @@ fn subscribe(
 /// the row flows in shortly after the commit) and store it. The gate — not the
 /// client — is the authority on which player this WS is.
 async fn login_relay(
-    pool: &Arc<Pool>,
+    _pool: &Arc<Pool>,
     upstream_players: Option<&Arc<bindings::players::DbConnection>>,
     session: &tokio::sync::Mutex<Option<u32>>,
     tx: &UnboundedSender<Vec<u8>>,
@@ -703,21 +703,36 @@ async fn login_relay(
         .and_then(|v| v.as_str())
         .unwrap_or_default()
         .to_string();
-    let url = format!(
-        "{}/v1/database/{}/call/claim_or_login",
-        pool.server_uri(),
-        pool.players_db()
-    );
-    match crate::connections::http_client().post(&url).json(&args).send().await {
-        Ok(resp) if resp.status().is_success() => {}
-        Ok(resp) => {
-            let code = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            let _ = tx.send(GateMsg::call_err(cid, format!("{code}: {body}")));
+    // Dispatch `claim_or_login` via the SDK binding (BSATN), awaiting commit
+    // before reading the player row back to establish the session.
+    {
+        use bindings::players::claim_or_login;
+        let Some(conn) = upstream_players else {
+            let _ = tx.send(GateMsg::call_err(
+                cid,
+                "claim_or_login: players upstream not connected".to_string(),
+            ));
             return;
-        }
-        Err(err) => {
-            let _ = tx.send(GateMsg::call_err(cid, err.to_string()));
+        };
+        let client_time_ms = args.get("client_time_ms").and_then(serde_json::Value::as_u64).unwrap_or(0);
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
+        let dispatch = conn.reducers.claim_or_login_then(
+            client_time_ms,
+            name.clone(),
+            move |_ctx, res| {
+                let _ = done_tx.send(res.unwrap_or_else(|e| Err(format!("internal: {e}"))));
+            },
+        );
+        let outcome = match dispatch {
+            Err(e) => Err(format!("claim_or_login dispatch: {e}")),
+            Ok(()) => match tokio::time::timeout(REDUCER_CALL_TIMEOUT, done_rx).await {
+                Ok(Ok(r)) => r.map_err(|e| format!("claim_or_login: {e}")),
+                Ok(Err(_)) => Err("claim_or_login: completion callback dropped".to_string()),
+                Err(_) => Err("claim_or_login: reducer timed out".to_string()),
+            },
+        };
+        if let Err(e) = outcome {
+            let _ = tx.send(GateMsg::call_err(cid, e));
             return;
         }
     }
