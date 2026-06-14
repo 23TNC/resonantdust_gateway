@@ -115,7 +115,7 @@ pub struct Pool {
     /// Live client WS senders, for gate-initiated broadcasts (e.g. the
     /// `content_changed` push after `add_content`). Dead senders are pruned
     /// lazily on the next broadcast.
-    clients: Mutex<Vec<tokio::sync::mpsc::UnboundedSender<String>>>,
+    clients: Mutex<Vec<tokio::sync::mpsc::UnboundedSender<Vec<u8>>>>,
     /// Per-zone distinct-player OBSERVER counts, derived from card-subscriptions
     /// (`cards WHERE macro_zone = Z`). `zone -> (player -> refcount)`; a player
     /// observes a zone while ≥1 of its card-subs covers it, so `observers =
@@ -229,12 +229,13 @@ impl Pool {
     /// Register a client's WS sender for gate-initiated broadcasts. Called once
     /// per connection; the sender is pruned on the next broadcast after the
     /// client disconnects (its receiver drops → `send` errors).
-    pub fn register_client(&self, tx: tokio::sync::mpsc::UnboundedSender<String>) {
+    pub fn register_client(&self, tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>) {
         self.clients.lock().unwrap().push(tx);
     }
 
-    /// Send `msg` to every live client, pruning any whose channel has closed.
-    pub fn broadcast(&self, msg: String) {
+    /// Send `msg` (an encoded `GateMsg` frame) to every live client, pruning any
+    /// whose channel has closed.
+    pub fn broadcast(&self, msg: Vec<u8>) {
         self.clients.lock().unwrap().retain(|tx| tx.send(msg.clone()).is_ok());
     }
 

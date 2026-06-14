@@ -79,7 +79,7 @@ impl Promises {
         timeout: Duration,
         now: Instant,
         resolve: impl FnMut(&dyn RegionView) -> Resolution + Send + 'static,
-    ) -> String {
+    ) -> Vec<u8> {
         self.items.push(Promise { cid, key, deadline: now + timeout, resolve: Box::new(resolve) });
         GateMsg::call_promise(cid, timeout.as_millis() as u64)
     }
@@ -95,7 +95,7 @@ impl Promises {
     /// Evaluate every pending promise against `view`; return the resolution frames
     /// to send. Resolved and timed-out promises are removed (their key recorded in
     /// `recent`); pending ones stay.
-    pub fn poll(&mut self, now: Instant, view: &dyn RegionView) -> Vec<String> {
+    pub fn poll(&mut self, now: Instant, view: &dyn RegionView) -> Vec<Vec<u8>> {
         let mut out = Vec::new();
         let recent = &mut self.recent;
         self.items.retain_mut(|p| {

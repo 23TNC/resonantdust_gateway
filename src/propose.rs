@@ -23,7 +23,7 @@ use resonantdust_rules::dsl_recipe;
 use resonantdust_protocol::protocol::GateMsg;
 
 /// Handle a `propose_action` call: run the pipeline and reply CallOk/CallErr.
-pub async fn handle(pool: &Arc<Pool>, tx: &UnboundedSender<String>, cid: u32, args: Value) {
+pub async fn handle(pool: &Arc<Pool>, tx: &UnboundedSender<Vec<u8>>, cid: u32, args: Value) {
     let reply = match propose(pool, args).await {
         Ok(()) => GateMsg::call_ok(cid),
         Err(error) => {

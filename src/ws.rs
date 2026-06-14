@@ -138,7 +138,7 @@ pub async fn handler(upgrade: WebSocketUpgrade, State(pool): State<Arc<Pool>>) -
 async fn run(socket: WebSocket, pool: Arc<Pool>, conn_id: u64) {
     info!("client connected");
     let (mut sink, mut stream) = socket.split();
-    let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+    let (tx, mut rx) = mpsc::unbounded_channel::<Vec<u8>>();
     // Register this connection for gate-initiated broadcasts (e.g. the
     // `content_changed` push after a runtime `add_content`).
     pool.register_client(tx.clone());
@@ -157,9 +157,8 @@ async fn run(socket: WebSocket, pool: Arc<Pool>, conn_id: u64) {
                 biased; // prefer draining real traffic over the keepalive
                 msg = rx.recv() => match msg {
                     Some(m) => {
-                        // Binary frame: the wire is bytes now (JSON-over-bytes here;
-                        // GateMsg flips to postcard in a later phase).
-                        if sink.send(Message::Binary(m.into_bytes().into())).await.is_err() {
+                        // Binary frame: GateMsg is postcard-encoded bytes.
+                        if sink.send(Message::Binary(m.into())).await.is_err() {
                             break;
                         }
                         idle.reset(); // traffic flowed → push the keepalive out
@@ -167,8 +166,8 @@ async fn run(socket: WebSocket, pool: Arc<Pool>, conn_id: u64) {
                     None => break, // channel closed → teardown
                 },
                 _ = idle.tick() => {
-                    let frame = GateMsg::Time { server_micros: now_micros() }.to_json();
-                    if sink.send(Message::Binary(frame.into_bytes().into())).await.is_err() {
+                    let frame = GateMsg::Time { server_micros: now_micros() }.to_bytes();
+                    if sink.send(Message::Binary(frame.into())).await.is_err() {
                         break;
                     }
                 }
@@ -246,7 +245,7 @@ async fn run(socket: WebSocket, pool: Arc<Pool>, conn_id: u64) {
                                 GateMsg::Error {
                                     error: format!("bad message: {err}"),
                                 }
-                                .to_json(),
+                                .to_bytes(),
                             );
                         }
                     },
@@ -298,7 +297,7 @@ async fn run(socket: WebSocket, pool: Arc<Pool>, conn_id: u64) {
 /// the connection type so `shard` and `regions` upstreams share one path.
 async fn await_ready<T>(
     built: Option<(T, tokio::sync::oneshot::Receiver<()>)>,
-    tx: &UnboundedSender<String>,
+    tx: &UnboundedSender<Vec<u8>>,
     what: &str,
 ) -> Option<T> {
     match built {
@@ -309,7 +308,7 @@ async fn await_ready<T>(
                     GateMsg::Error {
                         error: format!("{what} upstream connect timed out"),
                     }
-                    .to_json(),
+                    .to_bytes(),
                 );
                 None
             }
@@ -319,7 +318,7 @@ async fn await_ready<T>(
                 GateMsg::Error {
                     error: format!("{what} upstream unavailable"),
                 }
-                .to_json(),
+                .to_bytes(),
             );
             None
         }
@@ -335,7 +334,7 @@ async fn handle(
     session: &tokio::sync::Mutex<Option<u32>>,
     registry: &mut SubRegistry,
     promises: &mut crate::promise::Promises,
-    tx: &UnboundedSender<String>,
+    tx: &UnboundedSender<Vec<u8>>,
     msg: ClientMsg,
 ) {
     match msg {
@@ -401,98 +400,108 @@ async fn handle(
 
 // ---- reads: subscribe a shard table, fan rows back -------------------
 
-/// Serialize a generated (sats-`Serialize`) shard row to JSON for the client.
-/// Two normalizations so the payload drops into the client's generated TS row
-/// types: keys are camelCased (the sats bridge emits Rust snake_case), and
-/// every number is stringified — u64 fields (`valid_at`, `macro_zone`, …)
-/// exceed JS's safe-integer range, so they ride the wire as strings and the
-/// client coerces them to `bigint`/`number` per field.
-fn row_json<T: spacetimedb_sats::ser::Serialize + ?Sized>(row: &T) -> serde_json::Value {
-    let raw = spacetimedb_sats::ser::serde::serialize_to(row, serde_json::value::Serializer)
-        .unwrap_or(serde_json::Value::Null);
-    normalize(raw)
+/// Convert a generated SDK binding row → the shared typed wire row
+/// ([`RowData`]). One impl per relayed table's row type; the gate ships these
+/// postcard-encoded (native ints, no camelCase / number-stringify — the client
+/// core is Rust). Field copies are explicit so a binding-codegen reorder can't
+/// silently corrupt the positional wire.
+use resonantdust_protocol::rows::{CardRow, ChatRow, PlayerRow, RegionRow, RowData, ZoneRow};
+
+trait ToRowData {
+    fn to_row_data(&self) -> RowData;
 }
 
-/// Recursively camelCase object keys and stringify numbers (lossless transit
-/// for 64-bit ints).
-fn normalize(value: serde_json::Value) -> serde_json::Value {
-    use serde_json::Value;
-    match value {
-        Value::Object(map) => Value::Object(
-            map.into_iter()
-                .map(|(k, v)| (to_camel(&k), normalize(v)))
-                .collect(),
-        ),
-        Value::Array(items) => Value::Array(items.into_iter().map(normalize).collect()),
-        Value::Number(n) => Value::String(n.to_string()),
-        other => other,
+impl ToRowData for crate::bindings::shard::card_type::Card {
+    fn to_row_data(&self) -> RowData {
+        RowData::Card(CardRow {
+            valid_at: self.valid_at,
+            card_id: self.card_id,
+            macro_zone: self.macro_zone,
+            micro_location: self.micro_location,
+            owner_id: self.owner_id,
+            packed_definition: self.packed_definition,
+            flags: self.flags,
+            flags_bk: self.flags_bk,
+            stock: self.stock,
+        })
     }
 }
 
-fn to_camel(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut upper_next = false;
-    for c in s.chars() {
-        if c == '_' {
-            upper_next = true;
-        } else if upper_next {
-            out.extend(c.to_uppercase());
-            upper_next = false;
-        } else {
-            out.push(c);
-        }
+impl ToRowData for crate::bindings::shard::zone_type::Zone {
+    fn to_row_data(&self) -> RowData {
+        RowData::Zone(ZoneRow {
+            valid_at: self.valid_at,
+            zone_id: self.zone_id,
+            macro_zone: self.macro_zone,
+            packed_definition: self.packed_definition,
+            owner_id: self.owner_id,
+            tiles: [
+                self.t_0, self.t_1, self.t_2, self.t_3, self.t_4, self.t_5, self.t_6, self.t_7,
+                self.t_8, self.t_9, self.t_10, self.t_11, self.t_12,
+            ],
+        })
     }
-    out
 }
 
-/// Register insert/update/delete callbacks for one table that push
-/// [`GateMsg::Row`] tagged by **table name** (sid is a sentinel `0` — the client
-/// routes rows by table, not sid). Registered **once per (connection, table)**:
-/// the SDK fires these for every row in the connection's whole subscription set,
-/// so one set covers all of a table's queries and a row event fans back exactly
-/// one `Row`. The table's access trait + accessor are passed in.
+impl ToRowData for crate::bindings::shard::region_type::Region {
+    fn to_row_data(&self) -> RowData {
+        RowData::Region(RegionRow {
+            macro_region: self.macro_region,
+            zone_presence: self.zone_presence,
+            zone_available: self.zone_available,
+            distance: self.distance,
+        })
+    }
+}
+
+impl ToRowData for crate::bindings::players::player_type::Player {
+    fn to_row_data(&self) -> RowData {
+        RowData::Player(PlayerRow {
+            player_id: self.player_id,
+            name: self.name.clone(),
+        })
+    }
+}
+
+impl ToRowData for crate::bindings::chat::chat_message_type::ChatMessage {
+    fn to_row_data(&self) -> RowData {
+        RowData::Chat(ChatRow {
+            sent_at: self.sent_at,
+            sender_player_id: self.sender_player_id,
+            sender_name: self.sender_name.clone(),
+            body: self.body.clone(),
+        })
+    }
+}
+
+/// Build a `Row` frame (postcard bytes). `sid` is a sentinel `0` — the client
+/// routes rows by the [`RowData`] variant, not sid.
+fn row_frame(op: RowOp, row: RowData) -> Vec<u8> {
+    GateMsg::Row { sid: 0, op, row }.to_bytes()
+}
+
+/// Register insert/update/delete callbacks for one table that push a
+/// [`GateMsg::Row`] (the table is the [`RowData`] variant). Registered **once per
+/// (connection, table)**: the SDK fires these for every row in the connection's
+/// whole subscription set, so one set covers all of a table's queries and a row
+/// event fans back exactly one `Row`. The row type must `impl ToRowData`. (The
+/// `$name` literal is kept for call-site symmetry with `route!`; the wire no
+/// longer carries it.)
 macro_rules! relay_table {
     ($conn:expr, $tx:expr, $access:path, $accessor:ident, $name:literal) => {{
         use $access;
         let conn = &$conn;
         let tx_ins = $tx.clone();
         conn.db().$accessor().on_insert(move |_ctx, row| {
-            let _ = tx_ins.send(
-                GateMsg::Row {
-                    sid: 0,
-                    table: $name.to_string(),
-                    op: RowOp::Insert,
-                    old: None,
-                    row: row_json(row),
-                }
-                .to_json(),
-            );
+            let _ = tx_ins.send(row_frame(RowOp::Insert, row.to_row_data()));
         });
         let tx_upd = $tx.clone();
-        conn.db().$accessor().on_update(move |_ctx, old, new| {
-            let _ = tx_upd.send(
-                GateMsg::Row {
-                    sid: 0,
-                    table: $name.to_string(),
-                    op: RowOp::Update,
-                    old: Some(row_json(old)),
-                    row: row_json(new),
-                }
-                .to_json(),
-            );
+        conn.db().$accessor().on_update(move |_ctx, _old, new| {
+            let _ = tx_upd.send(row_frame(RowOp::Update, new.to_row_data()));
         });
         let tx_del = $tx.clone();
         conn.db().$accessor().on_delete(move |_ctx, row| {
-            let _ = tx_del.send(
-                GateMsg::Row {
-                    sid: 0,
-                    table: $name.to_string(),
-                    op: RowOp::Delete,
-                    old: None,
-                    row: row_json(row),
-                }
-                .to_json(),
-            );
+            let _ = tx_del.send(row_frame(RowOp::Delete, row.to_row_data()));
         });
     }};
 }
@@ -514,14 +523,14 @@ macro_rules! issue_sub {
             .subscription_builder()
             .on_applied(move |_ctx| {
                 debug!(sid, "upstream subscription applied");
-                let _ = tx_applied.send(GateMsg::Applied { sid }.to_json());
+                let _ = tx_applied.send(GateMsg::Applied { sid }.to_bytes());
             })
             .on_error(move |_ctx, err| {
                 let _ = tx_err.send(
                     GateMsg::Error {
                         error: format!("sub {sid}: {err}"),
                     }
-                    .to_json(),
+                    .to_bytes(),
                 );
             })
             .subscribe([query])
@@ -549,7 +558,7 @@ macro_rules! route {
                     // no new `on_applied` will fire for this sid.
                     entry.sids.insert($sid);
                     $reg.sid_query.insert($sid, key);
-                    let _ = $tx.send(GateMsg::Applied { sid: $sid }.to_json());
+                    let _ = $tx.send(GateMsg::Applied { sid: $sid }.to_bytes());
                 } else {
                     // First sharer of this query. Wire the table's callbacks once
                     // (covers every query on the table), issue the upstream, and
@@ -575,7 +584,7 @@ macro_rules! route {
                     GateMsg::Error {
                         error: format!("{} upstream unavailable", $what),
                     }
-                    .to_json(),
+                    .to_bytes(),
                 );
             }
         }
@@ -617,7 +626,7 @@ fn subscribe(
     chat: Option<&Arc<bindings::chat::DbConnection>>,
     players: Option<&Arc<bindings::players::DbConnection>>,
     registry: &mut SubRegistry,
-    tx: &UnboundedSender<String>,
+    tx: &UnboundedSender<Vec<u8>>,
     sid: u32,
     table: &str,
     filter: Option<&str>,
@@ -639,19 +648,20 @@ fn subscribe(
         "tile_cards" => route!(registry, regions, "regions", bindings::shard::cards_table::CardsTableAccess, cards, "tile_cards", tx, sid, query, UpHandle::Regions),
         // card-owned tables → the per-client `cards` upstream
         "cards" => route!(registry, cards, "cards", bindings::shard::cards_table::CardsTableAccess, cards, "cards", tx, sid, query, UpHandle::Cards),
-        "souls" => route!(registry, cards, "cards", bindings::shard::souls_table::SoulsTableAccess, souls, "souls", tx, sid, query, UpHandle::Cards),
-        "soul_privates" => route!(registry, cards, "cards", bindings::shard::soul_privates_table::SoulPrivatesTableAccess, soul_privates, "soul_privates", tx, sid, query, UpHandle::Cards),
         // chat-owned tables → the per-client `chat` upstream
         "chat_messages" => route!(registry, chat, "chat", bindings::chat::chat_messages_table::ChatMessagesTableAccess, chat_messages, "chat_messages", tx, sid, query, UpHandle::Chat),
         // players auth-DB tables → the per-client `players` upstream
         "players" => route!(registry, players, "players", bindings::players::players_table::PlayersTableAccess, players, "players", tx, sid, query, UpHandle::Players),
-        "player_profiles" => route!(registry, players, "players", bindings::players::player_profiles_table::PlayerProfilesTableAccess, player_profiles, "player_profiles", tx, sid, query, UpHandle::Players),
+        // souls / soul_privates / player_profiles dropped — no client subscribes
+        // to them, and they'd need RowData variants the wire doesn't define. A
+        // stray request hits the `other` arm below (an explicit unsupported-table
+        // error), which is correct.
         other => {
             let _ = tx.send(
                 GateMsg::Error {
                     error: format!("unsupported table {other:?}"),
                 }
-                .to_json(),
+                .to_bytes(),
             );
         }
     }
@@ -668,7 +678,7 @@ async fn login_relay(
     pool: &Arc<Pool>,
     upstream_players: Option<&Arc<bindings::players::DbConnection>>,
     session: &tokio::sync::Mutex<Option<u32>>,
-    tx: &UnboundedSender<String>,
+    tx: &UnboundedSender<Vec<u8>>,
     cid: u32,
     args: serde_json::Value,
 ) {
@@ -754,7 +764,7 @@ async fn add_content(
     pool: &Arc<Pool>,
     upstream_players: Option<&Arc<bindings::players::DbConnection>>,
     session: &tokio::sync::Mutex<Option<u32>>,
-    tx: &UnboundedSender<String>,
+    tx: &UnboundedSender<Vec<u8>>,
     cid: u32,
     args: serde_json::Value,
 ) {
@@ -775,7 +785,7 @@ async fn modify_content(
     pool: &Arc<Pool>,
     upstream_players: Option<&Arc<bindings::players::DbConnection>>,
     session: &tokio::sync::Mutex<Option<u32>>,
-    tx: &UnboundedSender<String>,
+    tx: &UnboundedSender<Vec<u8>>,
     cid: u32,
     args: serde_json::Value,
 ) {
@@ -797,7 +807,7 @@ async fn modify_locale(
     pool: &Arc<Pool>,
     upstream_players: Option<&Arc<bindings::players::DbConnection>>,
     session: &tokio::sync::Mutex<Option<u32>>,
-    tx: &UnboundedSender<String>,
+    tx: &UnboundedSender<Vec<u8>>,
     cid: u32,
     args: serde_json::Value,
 ) {
@@ -819,7 +829,7 @@ async fn modify_visuals(
     pool: &Arc<Pool>,
     upstream_players: Option<&Arc<bindings::players::DbConnection>>,
     session: &tokio::sync::Mutex<Option<u32>>,
-    tx: &UnboundedSender<String>,
+    tx: &UnboundedSender<Vec<u8>>,
     cid: u32,
     args: serde_json::Value,
 ) {
@@ -842,7 +852,7 @@ async fn upload_master(
     pool: &Arc<Pool>,
     upstream_players: Option<&Arc<bindings::players::DbConnection>>,
     session: &tokio::sync::Mutex<Option<u32>>,
-    tx: &UnboundedSender<String>,
+    tx: &UnboundedSender<Vec<u8>>,
     cid: u32,
     args: serde_json::Value,
 ) {
@@ -912,7 +922,7 @@ fn arg_str(args: &serde_json::Value, key: &str) -> Result<String, String> {
 /// Reply CallOk + broadcast `content_changed` on success; CallErr otherwise.
 fn reply_content(
     pool: &Arc<Pool>,
-    tx: &UnboundedSender<String>,
+    tx: &UnboundedSender<Vec<u8>>,
     cid: u32,
     op: &str,
     result: Result<String, String>,
@@ -937,7 +947,7 @@ async fn relay_call(
     pool: &Arc<Pool>,
     session: &tokio::sync::Mutex<Option<u32>>,
     promises: &mut crate::promise::Promises,
-    tx: &UnboundedSender<String>,
+    tx: &UnboundedSender<Vec<u8>>,
     cid: u32,
     reducer: &str,
     args: serde_json::Value,
