@@ -13,7 +13,6 @@ use spacetimedb_sdk::__codegen::{
 #[derive(__lib::ser::Serialize, __lib::de::Deserialize, Clone, PartialEq, Debug)]
 #[sats(crate = __lib)]
 pub struct Region {
-    pub valid_at: u64,
     pub macro_region: u64,
     pub zone_presence: u64,
     pub zone_available: u64,
@@ -30,7 +29,6 @@ impl __sdk::InModule for Region {
 ///
 /// Provides typed access to columns for query building.
 pub struct RegionCols {
-    pub valid_at: __sdk::__query_builder::Col<Region, u64>,
     pub macro_region: __sdk::__query_builder::Col<Region, u64>,
     pub zone_presence: __sdk::__query_builder::Col<Region, u64>,
     pub zone_available: __sdk::__query_builder::Col<Region, u64>,
@@ -41,7 +39,6 @@ impl __sdk::__query_builder::HasCols for Region {
     type Cols = RegionCols;
     fn cols(table_name: &'static str) -> Self::Cols {
         RegionCols {
-            valid_at: __sdk::__query_builder::Col::new(table_name, "valid_at"),
             macro_region: __sdk::__query_builder::Col::new(table_name, "macro_region"),
             zone_presence: __sdk::__query_builder::Col::new(table_name, "zone_presence"),
             zone_available: __sdk::__query_builder::Col::new(table_name, "zone_available"),
@@ -56,7 +53,6 @@ impl __sdk::__query_builder::HasCols for Region {
 /// Provides typed access to indexed columns for query building.
 pub struct RegionIxCols {
     pub macro_region: __sdk::__query_builder::IxCol<Region, u64>,
-    pub valid_at: __sdk::__query_builder::IxCol<Region, u64>,
 }
 
 impl __sdk::__query_builder::HasIxCols for Region {
@@ -64,7 +60,6 @@ impl __sdk::__query_builder::HasIxCols for Region {
     fn ix_cols(table_name: &'static str) -> Self::IxCols {
         RegionIxCols {
             macro_region: __sdk::__query_builder::IxCol::new(table_name, "macro_region"),
-            valid_at: __sdk::__query_builder::IxCol::new(table_name, "valid_at"),
 
         }
     }

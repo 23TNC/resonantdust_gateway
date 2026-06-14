@@ -96,30 +96,30 @@ impl<'ctx> __sdk::TableWithPrimaryKey for RegionsTableHandle<'ctx> {
     }
 }
 
-        /// Access to the `valid_at` unique index on the table `regions`,
+        /// Access to the `macro_region` unique index on the table `regions`,
         /// which allows point queries on the field of the same name
-        /// via the [`RegionsValidAtUnique::find`] method.
+        /// via the [`RegionsMacroRegionUnique::find`] method.
         ///
         /// Users are encouraged not to explicitly reference this type,
         /// but to directly chain method calls,
-        /// like `ctx.db.regions().valid_at().find(...)`.
-        pub struct RegionsValidAtUnique<'ctx> {
+        /// like `ctx.db.regions().macro_region().find(...)`.
+        pub struct RegionsMacroRegionUnique<'ctx> {
             imp: __sdk::UniqueConstraintHandle<Region, u64>,
             phantom: std::marker::PhantomData<&'ctx super::RemoteTables>,
         }
 
         impl<'ctx> RegionsTableHandle<'ctx> {
-            /// Get a handle on the `valid_at` unique index on the table `regions`.
-            pub fn valid_at(&self) -> RegionsValidAtUnique<'ctx> {
-                RegionsValidAtUnique {
-                    imp: self.imp.get_unique_constraint::<u64>("valid_at"),
+            /// Get a handle on the `macro_region` unique index on the table `regions`.
+            pub fn macro_region(&self) -> RegionsMacroRegionUnique<'ctx> {
+                RegionsMacroRegionUnique {
+                    imp: self.imp.get_unique_constraint::<u64>("macro_region"),
                     phantom: std::marker::PhantomData,
                 }
             }
         }
 
-        impl<'ctx> RegionsValidAtUnique<'ctx> {
-            /// Find the subscribed row whose `valid_at` column value is equal to `col_val`,
+        impl<'ctx> RegionsMacroRegionUnique<'ctx> {
+            /// Find the subscribed row whose `macro_region` column value is equal to `col_val`,
             /// if such a row is present in the client cache.
             pub fn find(&self, col_val: &u64) -> Option<Region> {
                 self.imp.find(col_val)
@@ -130,7 +130,7 @@ impl<'ctx> __sdk::TableWithPrimaryKey for RegionsTableHandle<'ctx> {
 pub(super) fn register_table(client_cache: &mut __sdk::ClientCache<super::RemoteModule>) {
 
     let _table = client_cache.get_or_make_table::<Region>("regions");
-    _table.add_unique_constraint::<u64>("valid_at", |row| &row.valid_at);
+    _table.add_unique_constraint::<u64>("macro_region", |row| &row.macro_region);
 }
 
 #[doc(hidden)]

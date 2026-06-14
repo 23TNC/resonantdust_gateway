@@ -10,6 +10,7 @@ mod config;
 mod connections;
 mod content;
 mod gather;
+mod promise;
 mod propose;
 mod routing;
 mod s3;

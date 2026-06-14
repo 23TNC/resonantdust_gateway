@@ -509,7 +509,7 @@ impl __sdk::DbUpdate for DbUpdate {
                 
                 diff.card_shards = cache.apply_diff_to_table::<CardShard>("card_shards", &self.card_shards).with_updates_by_pk(|row| &row.valid_at);
         diff.cards = cache.apply_diff_to_table::<Card>("cards", &self.cards).with_updates_by_pk(|row| &row.valid_at);
-        diff.regions = cache.apply_diff_to_table::<Region>("regions", &self.regions).with_updates_by_pk(|row| &row.valid_at);
+        diff.regions = cache.apply_diff_to_table::<Region>("regions", &self.regions).with_updates_by_pk(|row| &row.macro_region);
         diff.soul_privates = cache.apply_diff_to_table::<SoulPrivate>("soul_privates", &self.soul_privates).with_updates_by_pk(|row| &row.card_id);
         diff.souls = cache.apply_diff_to_table::<Soul>("souls", &self.souls).with_updates_by_pk(|row| &row.valid_at);
         diff.zones = cache.apply_diff_to_table::<Zone>("zones", &self.zones).with_updates_by_pk(|row| &row.valid_at);

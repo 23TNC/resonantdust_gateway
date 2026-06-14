@@ -293,7 +293,7 @@ async fn gather_region(
     .await?;
 
     snap.zone = latest_zone(&conn, proposal.macro_zone);
-    snap.region = latest_region(&conn, macro_region);
+    snap.region = current_region(&conn, macro_region);
     snap.card_shards = latest_card_shards(&conn);
     let (q, r) = micro_loose_cell(proposal.micro_location);
     snap.tile_card = latest_tile_card_at(&conn, proposal.macro_zone, q, r);
@@ -430,16 +430,22 @@ fn latest_zone(conn: &bindings::shard::DbConnection, macro_zone: u64) -> Option<
         .max_by_key(|z| valid_at_time(z.valid_at))
 }
 
-fn latest_region(
+/// `(zone_presence, zone_available)` for the mirrored row of `macro_region`, or
+/// `None` if the gate's regions subscription hasn't seen it. Drives the promise
+/// resolver for `request_zone`/`ensure_region`. `regions` is current-value (one
+/// row per `macro_region`), so this is a plain lookup.
+pub fn region_bits(conn: &bindings::shard::DbConnection, macro_region: u64) -> Option<(u64, u64)> {
+    current_region(conn, macro_region).map(|r| (r.zone_presence, r.zone_available))
+}
+
+/// The mirrored row for `macro_region`, or `None`. `regions` is current-value
+/// (one row per `macro_region`), so this is a plain lookup.
+fn current_region(
     conn: &bindings::shard::DbConnection,
     macro_region: u64,
 ) -> Option<bindings::shard::Region> {
     use bindings::shard::regions_table::RegionsTableAccess;
-    conn.db()
-        .regions()
-        .iter()
-        .filter(|r| r.macro_region == macro_region)
-        .max_by_key(|r| valid_at_time(r.valid_at))
+    conn.db().regions().iter().find(|r| r.macro_region == macro_region)
 }
 
 fn latest_card_shards(conn: &bindings::shard::DbConnection) -> Vec<bindings::shard::CardShard> {

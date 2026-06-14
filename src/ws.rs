@@ -35,6 +35,22 @@ use resonantdust_protocol::protocol::{now_micros, ClientMsg, GateMsg, RowOp};
 /// fast initial lock). Kept well under any idle-disconnect window.
 const IDLE_HEARTBEAT: Duration = Duration::from_secs(10);
 
+/// How often the connection loop evaluates outstanding async-call promises.
+const PROMISE_POLL: Duration = Duration::from_millis(50);
+/// How long a `request_zone`/`ensure_region` promise awaits its `available`/region
+/// before timing out into a `call_err` (→ client retry). Materialization is
+/// synchronous in the shard; this only bounds the gate's subscription catch-up.
+const PROMISE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Adapts the per-connection regions subscription to [`crate::promise::RegionView`]
+/// so a promise resolver can read a zone's `available` bit at poll time.
+struct RegionsView<'a>(Option<&'a bindings::shard::DbConnection>);
+impl crate::promise::RegionView for RegionsView<'_> {
+    fn region_bits(&self, macro_region: u64) -> Option<(u64, u64)> {
+        self.0.and_then(|c| crate::gather::region_bits(c, macro_region))
+    }
+}
+
 /// Monotonic per-process connection id, for log correlation.
 static NEXT_CONN_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -185,41 +201,63 @@ async fn run(socket: WebSocket, pool: Arc<Pool>, conn_id: u64) {
     // (Clock sync is handled by the forwarder: `call_ok`/`call_err` piggyback for
     // active clients, plus the idle `Time` keepalive — no separate task.)
 
-    while let Some(frame) = stream.next().await {
-        let msg = match frame {
-            Ok(m) => m,
-            Err(err) => {
-                warn!(%err, "receive error");
-                break;
-            }
-        };
-        match msg {
-            Message::Text(text) => match serde_json::from_str::<ClientMsg>(&text) {
-                Ok(cmsg) => {
-                    handle(
-                        &pool,
-                        upstream_regions.as_ref(),
-                        upstream_cards.as_ref(),
-                        upstream_chat.as_ref(),
-                        upstream_players.as_ref(),
-                        &session,
-                        &mut registry,
-                        &tx,
-                        cmsg,
-                    )
-                    .await
-                }
-                Err(err) => {
-                    let _ = tx.send(
-                        GateMsg::Error {
-                            error: format!("bad message: {err}"),
+    // Outstanding async-call promises (`request_zone`/`ensure_region` awaiting their
+    // `available`/region in this connection's regions mirror). Resolved on a poll
+    // tick interleaved with inbound traffic.
+    let mut promises = crate::promise::Promises::new();
+    let mut promise_poll = tokio::time::interval(PROMISE_POLL);
+    promise_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+    loop {
+        tokio::select! {
+            biased; // serve inbound traffic before resolving promises
+            frame = stream.next() => {
+                let Some(frame) = frame else { break };
+                let msg = match frame {
+                    Ok(m) => m,
+                    Err(err) => {
+                        warn!(%err, "receive error");
+                        break;
+                    }
+                };
+                match msg {
+                    Message::Text(text) => match serde_json::from_str::<ClientMsg>(&text) {
+                        Ok(cmsg) => {
+                            handle(
+                                &pool,
+                                upstream_regions.as_ref(),
+                                upstream_cards.as_ref(),
+                                upstream_chat.as_ref(),
+                                upstream_players.as_ref(),
+                                &session,
+                                &mut registry,
+                                &mut promises,
+                                &tx,
+                                cmsg,
+                            )
+                            .await
                         }
-                        .to_json(),
-                    );
+                        Err(err) => {
+                            let _ = tx.send(
+                                GateMsg::Error {
+                                    error: format!("bad message: {err}"),
+                                }
+                                .to_json(),
+                            );
+                        }
+                    },
+                    Message::Close(_) => break,
+                    Message::Binary(_) | Message::Ping(_) | Message::Pong(_) => {}
                 }
-            },
-            Message::Close(_) => break,
-            Message::Binary(_) | Message::Ping(_) | Message::Pong(_) => {}
+            }
+            _ = promise_poll.tick() => {
+                if !promises.is_empty() {
+                    let view = RegionsView(upstream_regions.as_deref());
+                    for frame in promises.poll(std::time::Instant::now(), &view) {
+                        let _ = tx.send(frame);
+                    }
+                }
+            }
         }
     }
 
@@ -292,6 +330,7 @@ async fn handle(
     upstream_players: Option<&Arc<bindings::players::DbConnection>>,
     session: &tokio::sync::Mutex<Option<u32>>,
     registry: &mut SubRegistry,
+    promises: &mut crate::promise::Promises,
     tx: &UnboundedSender<String>,
     msg: ClientMsg,
 ) {
@@ -350,7 +389,7 @@ async fn handle(
                 // texture R2 bucket. Same content-author gate as add/modify.
                 upload_master(pool, upstream_players, session, tx, cid, args).await;
             } else {
-                relay_call(pool, session, tx, cid, &reducer, args).await;
+                relay_call(pool, session, promises, tx, cid, &reducer, args).await;
             }
         }
     }
@@ -893,6 +932,7 @@ fn reply_content(
 async fn relay_call(
     pool: &Arc<Pool>,
     session: &tokio::sync::Mutex<Option<u32>>,
+    promises: &mut crate::promise::Promises,
     tx: &UnboundedSender<String>,
     cid: u32,
     reducer: &str,
@@ -1069,7 +1109,21 @@ async fn relay_call(
     };
     let url = format!("{}/v1/database/{}/call/{}", pool.server_uri(), db, reducer);
     let reply = match crate::connections::http_client().post(&url).json(&args).send().await {
-        Ok(resp) if resp.status().is_success() => GateMsg::call_ok(cid),
+        Ok(resp) if resp.status().is_success() => {
+            // A worldgen reducer's HTTP 200 only means "the reducer ran" — its real
+            // outcome (the zone materializing / the region coming into existence) is
+            // observed on the regions subscription, not in this response. Don't lie
+            // `call_ok`: ACCEPT a promise that resolves on the server-truth bit, so a
+            // silent no-op times out → the client retries instead of latching.
+            match worldgen_promise(reducer, &args) {
+                Some(resolve) => {
+                    let frame = promises.accept(cid, PROMISE_TIMEOUT, std::time::Instant::now(), resolve);
+                    let _ = tx.send(frame);
+                    return;
+                }
+                None => GateMsg::call_ok(cid),
+            }
+        }
         Ok(resp) => {
             let code = resp.status();
             let body = resp.text().await.unwrap_or_default();
@@ -1078,4 +1132,42 @@ async fn relay_call(
         Err(err) => GateMsg::call_err(cid, err.to_string()),
     };
     let _ = tx.send(reply);
+}
+
+/// Build the promise resolver for a worldgen reducer, or `None` for reducers whose
+/// outcome is fully known at HTTP-reply time (those reply `call_ok` directly).
+///
+/// - `request_zone`: resolves `Ok` once the zone's `available` bit flips in its
+///   region. A silent no-op (no region, zone already cleared) never flips it, so
+///   the promise times out and the client re-requests.
+/// - `ensure_region`: resolves `Ok` once the region exists in the gate's mirror.
+fn worldgen_promise(
+    reducer: &str,
+    args: &serde_json::Value,
+) -> Option<Box<dyn FnMut(&dyn crate::promise::RegionView) -> crate::promise::Resolution + Send>> {
+    use crate::promise::Resolution;
+    use resonantdust_codec::packed::region_of_zone;
+    let mz = args
+        .get("macro_zone")
+        .or_else(|| args.get("macroZone"))
+        .and_then(serde_json::Value::as_u64)?;
+    let (macro_region, bit) = region_of_zone(mz);
+    match reducer {
+        "request_zone" => {
+            let mask = 1u64 << bit;
+            Some(Box::new(move |view: &dyn crate::promise::RegionView| {
+                match view.region_bits(macro_region) {
+                    Some((_, avail)) if avail & mask != 0 => Resolution::Ok,
+                    _ => Resolution::Pending,
+                }
+            }))
+        }
+        "ensure_region" => Some(Box::new(move |view: &dyn crate::promise::RegionView| {
+            match view.region_bits(macro_region) {
+                Some(_) => Resolution::Ok,
+                None => Resolution::Pending,
+            }
+        })),
+        _ => None,
+    }
 }
