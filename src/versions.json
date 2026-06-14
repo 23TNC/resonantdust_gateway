@@ -1,15 +1,15 @@
 {
-  "build": 76,
-  "generated": "2026-06-14T16:03:26Z",
+  "build": 82,
+  "generated": "2026-06-14T16:21:43Z",
   "components": {
-    "shared": { "hash": "4b66ca5435a687ba84131fd1be8ab5c69dd805cf3f129dd54aac5f6abf6c9784", "seq": 72, "ts": "2026-06-14T16:00:18Z" },
-    "shard": { "hash": "429f19eb4ab89f246e1c83e2ce9fc6dca910b225039e1c63786f5051ff43c12a", "seq": 73, "ts": "2026-06-14T16:00:18Z" },
-    "players": { "hash": "37756288b80ed933c3153fd89ea04c078fcbb991228908a4fa84300b215dc0fc", "seq": 74, "ts": "2026-06-14T16:00:18Z" },
+    "shared": { "hash": "b491d5d7158af51cf12a5cd2952d15a6282b0bc7de33a329401ef2109fb5e394", "seq": 77, "ts": "2026-06-14T16:19:18Z" },
+    "shard": { "hash": "c34155a516c35867dc82bc22692bb7e2a9d272d2edbe34f642ad9a8d433a7d50", "seq": 78, "ts": "2026-06-14T16:19:18Z" },
+    "players": { "hash": "9ee325cc6274d10aab87afd2d9c1a918df625098f64ff80eec8d0a745462851c", "seq": 79, "ts": "2026-06-14T16:19:18Z" },
     "chat": { "hash": "327dc9fae578063b1728feafcc5ff92e811c67a1897ffadee7a8407cd5918aa7", "seq": 4, "ts": "2026-06-13T19:52:27Z" },
     "regionindex": { "hash": "88b165b5ce2062da6deb5d4a81355eb92bb89f18864941849e4b99eafb45b5c5", "seq": 5, "ts": "2026-06-13T19:52:27Z" },
-    "gate": { "hash": "40ccaabf9dd568957fec7015a9abc02504d3b79ab36198c64fdf7185dd410534", "seq": 76, "ts": "2026-06-14T16:01:25Z" },
+    "gate": { "hash": "90c46db2dd8fac54a33e13f3daf09d59cbef31684d90a353eabdee4f8ebb4bcb", "seq": 82, "ts": "2026-06-14T16:19:54Z" },
     "content": { "hash": "f1fb3f91f94c4e42a0ed6fe76551478227091b6c0f3d33330abae376ebea82f1", "seq": 60, "ts": "2026-06-14T14:38:41Z" },
-    "client": { "hash": "4f6b7f3689f342253a078b97f035d6a34deea12532cfa1054611b59ea013be9b", "seq": 70, "ts": "2026-06-14T15:59:44Z" },
+    "client": { "hash": "550fa041118407e2c5a855bc7cfbc953099da37e6a2cb022f180829d0e0422b0", "seq": 81, "ts": "2026-06-14T16:19:18Z" },
     "view": { "hash": "e618aef9be8bacbd5c5d7f139d7acecc6140368071b2aab2c98903e5375be050", "seq": 71, "ts": "2026-06-14T15:59:44Z" }
   }
 }

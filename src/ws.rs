@@ -222,9 +222,8 @@ async fn run(socket: WebSocket, pool: Arc<Pool>, conn_id: u64) {
                     }
                 };
                 match msg {
-                    // Binary frame: the wire is bytes now. `ClientMsg` is still
-                    // JSON-over-bytes here (postcard flips it in a later phase).
-                    Message::Binary(bytes) => match serde_json::from_slice::<ClientMsg>(&bytes) {
+                    // Binary frame: `ClientMsg` is postcard-encoded.
+                    Message::Binary(bytes) => match postcard::from_bytes::<ClientMsg>(&bytes) {
                         Ok(cmsg) => {
                             handle(
                                 &pool,
@@ -369,7 +368,11 @@ async fn handle(
             }
             registry.remove_sid(sid);
         }
-        ClientMsg::Call { cid, reducer, args } => {
+        ClientMsg::Call { cid, client_time_ms, call } => {
+            // The typed call → (reducer name, JSON args) — exactly the shape the
+            // relay/intercept path below has always consumed (P2 keeps it
+            // Value-based; P4 swaps this seam for typed SDK calls).
+            let (reducer, args) = call.to_args(client_time_ms);
             // `propose_action` is no longer a relay — the gate validates the
             // recipe across shards and applies it via narrow reducer calls.
             if reducer == "propose_action" {
@@ -392,7 +395,7 @@ async fn handle(
                 // texture R2 bucket. Same content-author gate as add/modify.
                 upload_master(pool, upstream_players, session, tx, cid, args).await;
             } else {
-                relay_call(pool, session, promises, tx, cid, &reducer, args).await;
+                relay_call(pool, session, promises, tx, cid, reducer, args).await;
             }
         }
     }

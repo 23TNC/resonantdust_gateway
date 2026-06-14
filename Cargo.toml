@@ -16,6 +16,8 @@ futures-util = "0.3"
 # Client<->gate protocol framing + relaying shard rows/reducers as JSON.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Binary wire codec (postcard) for ClientMsg/GateMsg encode/decode.
+postcard = { version = "1", features = ["alloc"] }
 # sats->serde bridge: serialize generated shard row types (sats Serialize, not
 # serde) to JSON for the client.
 spacetimedb-sats = "2.3"
