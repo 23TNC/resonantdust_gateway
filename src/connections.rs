@@ -579,7 +579,7 @@ impl Pool {
     }
 
     /// Per-client upstream to the `cards` shard, mirroring [`fresh_regions`].
-    /// `cards`/`souls`/`soul_privates` reads route here; each client needs its
+    /// `cards`/`souls` reads route here; each client needs its
     /// OWN cards upstream for the same set-semantics reason. Shard 0 today
     /// (owner sharding is future work).
     pub fn fresh_cards(

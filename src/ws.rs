@@ -633,9 +633,9 @@ fn publish_observers(pool: &Arc<Pool>, zone: u64, observers: u32) {
 }
 
 /// Fan a client subscription to the upstream that owns the table. `zones` and
-/// `regions` live in the `regions` module's database; `cards`/`souls`/
-/// `soul_privates` are still in the `shard` monolith. The client is oblivious —
-/// it subscribes by table name and the gate picks the backing connection.
+/// `regions` live in the `regions` module's database; `cards`/`souls` are still
+/// in the `shard` monolith. The client is oblivious — it subscribes by table
+/// name and the gate picks the backing connection.
 fn subscribe(
     regions: Option<&Arc<bindings::shard::DbConnection>>,
     cards: Option<&Arc<bindings::shard::DbConnection>>,
@@ -668,10 +668,10 @@ fn subscribe(
         "chat_messages" => route!(registry, chat, "chat", bindings::chat::chat_messages_table::ChatMessagesTableAccess, chat_messages, "chat_messages", tx, sid, query, UpHandle::Chat),
         // players auth-DB tables → the per-client `players` upstream
         "players" => route!(registry, players, "players", bindings::players::players_table::PlayersTableAccess, players, "players", tx, sid, query, UpHandle::Players),
-        // souls / soul_privates / player_profiles dropped — no client subscribes
-        // to them, and they'd need RowData variants the wire doesn't define. A
-        // stray request hits the `other` arm below (an explicit unsupported-table
-        // error), which is correct.
+        // souls / player_profiles dropped — no client subscribes to them, and
+        // they'd need RowData variants the wire doesn't define. A stray request
+        // hits the `other` arm below (an explicit unsupported-table error), which
+        // is correct.
         other => {
             let _ = tx.send(
                 GateMsg::Error {
@@ -1249,27 +1249,6 @@ async fn relay_call(
             obj.insert("distance".to_string(), serde_json::json!(distance));
         }
     }
-    // request_blueprint: the gate computes the builder cap (the soul def's folded
-    // `builder` aspect) and injects it; the reducer compares it to the soul's
-    // live `active_blueprints`. Cap is the player_soul's builder aspect — blueprint
-    // requests are for the player's soul (the only blueprint-requesting soul def).
-    if reducer == "request_blueprint" {
-        if let Some(obj) = args.as_object_mut() {
-            let bundle = pool.content();
-            let cap = crate::content::def_aspect_total(&bundle, "player_soul", "builder");
-            obj.insert("max_active".to_string(), serde_json::json!(cap.max(0) as i32));
-            // Resolve the blueprint id → its `<blueprint>.card` ref → packed def,
-            // so the module spawns the right card without a blueprint registry.
-            let packed = obj
-                .get("blueprint_id")
-                .and_then(|v| v.as_u64())
-                .and_then(|id| bundle.blueprint_name(id as u16))
-                .and_then(|name| bundle.blueprint_card(name))
-                .and_then(|card| bundle.packed_def(&card))
-                .unwrap_or(0);
-            obj.insert("blueprint_packed_def".to_string(), serde_json::json!(packed));
-        }
-    }
     if reducer == "set_last_login" {
         match *session.lock().await {
             Some(pid) => {
@@ -1386,9 +1365,8 @@ async fn relay_call(
 
     // Every reducer the client actually sends is SDK-converted above (relay +
     // worldgen); `propose_action`/`claim_or_login` are intercepted in `handle`.
-    // `place_card` / `request_blueprint` / `set_last_login` / `create_player` are
-    // dead routes the client never sends, so anything reaching here is a bug, not
-    // an HTTP fallback.
+    // `place_card` / `set_last_login` / `create_player` are dead routes the client
+    // never sends, so anything reaching here is a bug, not an HTTP fallback.
     let _ = tx.send(GateMsg::call_err(
         cid,
         format!("relay_call: reducer {reducer:?} has no SDK path (not relayed)"),

@@ -635,8 +635,8 @@ fn content_version(sources: &[(String, String)], locales: &[(String, String)]) -
 
 /// The folded value of `aspect` on a card def (by name) — its static aspects
 /// with the `satisfies` hierarchy rolled up (so `builder` sums `crafting`, …).
-/// The gate-side replacement for the cards module's old `def_aspect_total`;
-/// used to compute the blueprint builder-cap. `0` for an unknown def/aspect.
+/// The gate-side replacement for the cards module's old `def_aspect_total`
+/// (e.g. a tile's folded `cost` for move timing). `0` for an unknown def/aspect.
 pub fn def_aspect_total(bundle: &Bundle, name: &str, aspect: &str) -> i64 {
     use resonantdust_dsl::bridge::{card_view, Card};
     use resonantdust_dsl::vm::{Cell, Store};

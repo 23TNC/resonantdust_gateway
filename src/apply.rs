@@ -208,8 +208,6 @@ pub async fn apply(
     // Per-product container disk radius, so a recipe output lands in a cell that
     // EXISTS in its target region disk (mirrors create_card's `distance`).
     let mut create_distances: Vec<u16> = Vec::new();
-    let mut unlock_targets: Vec<u32> = Vec::new();
-    let mut unlock_blueprints: Vec<u16> = Vec::new();
     let mut stat_souls: Vec<u32> = Vec::new();
     let mut stat_fields: Vec<u8> = Vec::new();
     let mut stat_bytes: Vec<u8> = Vec::new();
@@ -278,13 +276,6 @@ pub async fn apply(
                 stock_card_ids.push(*card_id);
                 stock_values.push(*stock);
             }
-            Effect::UnlockBlueprint {
-                blueprint_id,
-                target_card_id,
-            } => {
-                unlock_targets.push(*target_card_id);
-                unlock_blueprints.push(*blueprint_id);
-            }
         }
     }
 
@@ -336,8 +327,6 @@ pub async fn apply(
         create_distances,
         create_stocks,
         create_tags,
-        unlock_targets,
-        unlock_blueprints,
         stat_souls,
         stat_fields,
         stat_bytes,

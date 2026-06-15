@@ -21,7 +21,6 @@ pub mod region_type;
 pub mod sequence_counter_type;
 pub mod shard_identity_type;
 pub mod soul_type;
-pub mod soul_private_type;
 pub mod tile_point_type;
 pub mod zone_type;
 pub mod acquire_card_shard_reducer;
@@ -35,13 +34,11 @@ pub mod move_soul_reducer;
 pub mod place_card_reducer;
 pub mod release_card_shard_reducer;
 pub mod release_pending_reducer;
-pub mod request_blueprint_reducer;
 pub mod request_zone_reducer;
 pub mod set_shard_identity_reducer;
 pub mod card_shards_table;
 pub mod cards_table;
 pub mod regions_table;
-pub mod soul_privates_table;
 pub mod souls_table;
 pub mod zones_table;
 
@@ -55,13 +52,11 @@ pub use region_type::Region;
 pub use sequence_counter_type::SequenceCounter;
 pub use shard_identity_type::ShardIdentity;
 pub use soul_type::Soul;
-pub use soul_private_type::SoulPrivate;
 pub use tile_point_type::TilePoint;
 pub use zone_type::Zone;
 pub use card_shards_table::*;
 pub use cards_table::*;
 pub use regions_table::*;
-pub use soul_privates_table::*;
 pub use souls_table::*;
 pub use zones_table::*;
 pub use acquire_card_shard_reducer::acquire_card_shard;
@@ -75,7 +70,6 @@ pub use move_soul_reducer::move_soul;
 pub use place_card_reducer::place_card;
 pub use release_card_shard_reducer::release_card_shard;
 pub use release_pending_reducer::release_pending;
-pub use request_blueprint_reducer::request_blueprint;
 pub use request_zone_reducer::request_zone;
 pub use set_shard_identity_reducer::set_shard_identity;
 
@@ -104,8 +98,6 @@ pub enum Reducer {
         create_distances: Vec::<u16>,
         create_stocks: Vec::<u32>,
         create_tags: Vec::<u8>,
-        unlock_targets: Vec::<u32>,
-        unlock_blueprints: Vec::<u16>,
         stat_souls: Vec::<u32>,
         stat_fields: Vec::<u8>,
         stat_bytes: Vec::<u8>,
@@ -185,17 +177,6 @@ pub enum Reducer {
         root: u32,
         bindings: Vec::<Vec::<u32>>,
 }    ,
-    RequestBlueprint {
-        client_time_ms: u64,
-        caller_player_id: u32,
-        soul_card_id: u32,
-        blueprint_id: u16,
-        surface: u8,
-        macro_zone: u64,
-        micro_location: u32,
-        max_active: i32,
-        blueprint_packed_def: u16,
-}    ,
     RequestZone {
         client_time_ms: u64,
         macro_zone: u64,
@@ -226,7 +207,6 @@ impl __sdk::Reducer for Reducer {
             Reducer::PlaceCard { .. } => "place_card",
             Reducer::ReleaseCardShard { .. } => "release_card_shard",
             Reducer::ReleasePending { .. } => "release_pending",
-            Reducer::RequestBlueprint { .. } => "request_blueprint",
             Reducer::RequestZone { .. } => "request_zone",
             Reducer::SetShardIdentity { .. } => "set_shard_identity",
             _ => unreachable!(),
@@ -255,8 +235,6 @@ fn args_bsatn(&self) -> Result<Vec<u8>, __sats::bsatn::EncodeError> {
                 create_distances,
                 create_stocks,
                 create_tags,
-                unlock_targets,
-                unlock_blueprints,
                 stat_souls,
                 stat_fields,
                 stat_bytes,
@@ -280,8 +258,6 @@ fn args_bsatn(&self) -> Result<Vec<u8>, __sats::bsatn::EncodeError> {
                 create_distances: create_distances.clone(),
                 create_stocks: create_stocks.clone(),
                 create_tags: create_tags.clone(),
-                unlock_targets: unlock_targets.clone(),
-                unlock_blueprints: unlock_blueprints.clone(),
                 stat_souls: stat_souls.clone(),
                 stat_fields: stat_fields.clone(),
                 stat_bytes: stat_bytes.clone(),
@@ -420,27 +396,6 @@ fn args_bsatn(&self) -> Result<Vec<u8>, __sats::bsatn::EncodeError> {
                 root: root.clone(),
                 bindings: bindings.clone(),
 }),
-            Reducer::RequestBlueprint{
-                client_time_ms,
-                caller_player_id,
-                soul_card_id,
-                blueprint_id,
-                surface,
-                macro_zone,
-                micro_location,
-                max_active,
-                blueprint_packed_def,
-}             => __sats::bsatn::to_vec(&request_blueprint_reducer::RequestBlueprintArgs {
-                client_time_ms: client_time_ms.clone(),
-                caller_player_id: caller_player_id.clone(),
-                soul_card_id: soul_card_id.clone(),
-                blueprint_id: blueprint_id.clone(),
-                surface: surface.clone(),
-                macro_zone: macro_zone.clone(),
-                micro_location: micro_location.clone(),
-                max_active: max_active.clone(),
-                blueprint_packed_def: blueprint_packed_def.clone(),
-}),
             Reducer::RequestZone{
                 client_time_ms,
                 macro_zone,
@@ -469,7 +424,6 @@ pub struct DbUpdate {
         card_shards: __sdk::TableUpdate<CardShard>,
     cards: __sdk::TableUpdate<Card>,
     regions: __sdk::TableUpdate<Region>,
-    soul_privates: __sdk::TableUpdate<SoulPrivate>,
     souls: __sdk::TableUpdate<Soul>,
     zones: __sdk::TableUpdate<Zone>,
 }
@@ -485,7 +439,6 @@ impl TryFrom<__ws::v2::TransactionUpdate> for DbUpdate {
         "card_shards" => db_update.card_shards.append(card_shards_table::parse_table_update(table_update)?),
     "cards" => db_update.cards.append(cards_table::parse_table_update(table_update)?),
     "regions" => db_update.regions.append(regions_table::parse_table_update(table_update)?),
-    "soul_privates" => db_update.soul_privates.append(soul_privates_table::parse_table_update(table_update)?),
     "souls" => db_update.souls.append(souls_table::parse_table_update(table_update)?),
     "zones" => db_update.zones.append(zones_table::parse_table_update(table_update)?),
 
@@ -513,7 +466,6 @@ impl __sdk::DbUpdate for DbUpdate {
                 diff.card_shards = cache.apply_diff_to_table::<CardShard>("card_shards", &self.card_shards).with_updates_by_pk(|row| &row.valid_at);
         diff.cards = cache.apply_diff_to_table::<Card>("cards", &self.cards).with_updates_by_pk(|row| &row.valid_at);
         diff.regions = cache.apply_diff_to_table::<Region>("regions", &self.regions).with_updates_by_pk(|row| &row.macro_region);
-        diff.soul_privates = cache.apply_diff_to_table::<SoulPrivate>("soul_privates", &self.soul_privates).with_updates_by_pk(|row| &row.card_id);
         diff.souls = cache.apply_diff_to_table::<Soul>("souls", &self.souls).with_updates_by_pk(|row| &row.valid_at);
         diff.zones = cache.apply_diff_to_table::<Zone>("zones", &self.zones).with_updates_by_pk(|row| &row.valid_at);
 
@@ -526,7 +478,6 @@ for table_rows in raw.tables {
                                 "card_shards" => db_update.card_shards.append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
                 "cards" => db_update.cards.append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
                 "regions" => db_update.regions.append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
-                "soul_privates" => db_update.soul_privates.append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
                 "souls" => db_update.souls.append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
                 "zones" => db_update.zones.append(__sdk::parse_row_list_as_inserts(table_rows.rows)?),
                 unknown => { return Err(__sdk::InternalError::unknown_name("table", unknown, "QueryRows").into()); }
@@ -539,7 +490,6 @@ for table_rows in raw.tables {
                                 "card_shards" => db_update.card_shards.append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
                 "cards" => db_update.cards.append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
                 "regions" => db_update.regions.append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
-                "soul_privates" => db_update.soul_privates.append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
                 "souls" => db_update.souls.append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
                 "zones" => db_update.zones.append(__sdk::parse_row_list_as_deletes(table_rows.rows)?),
                 unknown => { return Err(__sdk::InternalError::unknown_name("table", unknown, "QueryRows").into()); }
@@ -554,7 +504,6 @@ pub struct AppliedDiff<'r> {
         card_shards: __sdk::TableAppliedDiff<'r, CardShard>,
     cards: __sdk::TableAppliedDiff<'r, Card>,
     regions: __sdk::TableAppliedDiff<'r, Region>,
-    soul_privates: __sdk::TableAppliedDiff<'r, SoulPrivate>,
     souls: __sdk::TableAppliedDiff<'r, Soul>,
     zones: __sdk::TableAppliedDiff<'r, Zone>,
     __unused: std::marker::PhantomData<&'r ()>,
@@ -570,7 +519,6 @@ impl<'r> __sdk::AppliedDiff<'r> for AppliedDiff<'r> {
                 callbacks.invoke_table_row_callbacks::<CardShard>("card_shards", &self.card_shards, event);
         callbacks.invoke_table_row_callbacks::<Card>("cards", &self.cards, event);
         callbacks.invoke_table_row_callbacks::<Region>("regions", &self.regions, event);
-        callbacks.invoke_table_row_callbacks::<SoulPrivate>("soul_privates", &self.soul_privates, event);
         callbacks.invoke_table_row_callbacks::<Soul>("souls", &self.souls, event);
         callbacks.invoke_table_row_callbacks::<Zone>("zones", &self.zones, event);
 }
@@ -1227,7 +1175,6 @@ fn register_tables(client_cache: &mut __sdk::ClientCache<Self>) {
                 card_shards_table::register_table(client_cache);
         cards_table::register_table(client_cache);
         regions_table::register_table(client_cache);
-        soul_privates_table::register_table(client_cache);
         souls_table::register_table(client_cache);
         zones_table::register_table(client_cache);
 }
@@ -1235,7 +1182,6 @@ const ALL_TABLE_NAMES: &'static [&'static str] = &[
                 "card_shards",
         "cards",
         "regions",
-        "soul_privates",
         "souls",
         "zones",
 ];
