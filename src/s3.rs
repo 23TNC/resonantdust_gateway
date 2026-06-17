@@ -92,7 +92,7 @@ impl R2Store {
 
     /// GET an object's body as UTF-8 text.
     pub async fn get(&self, key: &str) -> Result<String, String> {
-        let resp = self.signed(reqwest::Method::GET, key, &[]).await?;
+        let resp = self.signed(reqwest::Method::GET, key, &[], &[]).await?;
         let status = resp.status();
         if !status.is_success() {
             return Err(format!("S3 GET {key}: HTTP {status}"));
@@ -106,7 +106,7 @@ impl R2Store {
     /// status / transport error. Unlike [`get`](Self::get) this never decodes as
     /// UTF-8, so binary payloads survive intact.
     pub async fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>, String> {
-        let resp = self.signed(reqwest::Method::GET, key, &[]).await?;
+        let resp = self.signed(reqwest::Method::GET, key, &[], &[]).await?;
         let status = resp.status();
         if status == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
@@ -122,7 +122,23 @@ impl R2Store {
 
     /// PUT `body` at `key` (overwriting).
     pub async fn put(&self, key: &str, body: &[u8]) -> Result<(), String> {
-        let resp = self.signed(reqwest::Method::PUT, key, body).await?;
+        self.put_with(key, body, &[]).await
+    }
+
+    /// PUT `body` at `key` with `Cache-Control` stored as object metadata, so the
+    /// bucket's public CDN serves it cacheable. Used for **immutable** generated
+    /// LODs (a `{size,stem,channel}` is content-addressed — never mutated in
+    /// place), so clients re-fetch the R2-direct URL from disk cache, not the wire.
+    /// NOT for content/`.rd`/versions writes — those overwrite in place and must
+    /// stay revalidated.
+    pub async fn put_cached(&self, key: &str, body: &[u8], cache_control: &str) -> Result<(), String> {
+        self.put_with(key, body, &[("cache-control", cache_control)]).await
+    }
+
+    /// PUT with extra (unsigned) headers — SigV4 only requires the headers it
+    /// signs to be present, so object metadata like `Cache-Control` rides along.
+    async fn put_with(&self, key: &str, body: &[u8], extra: &[(&str, &str)]) -> Result<(), String> {
+        let resp = self.signed(reqwest::Method::PUT, key, body, extra).await?;
         let status = resp.status();
         if !status.is_success() {
             let detail = resp.text().await.unwrap_or_default();
@@ -140,6 +156,7 @@ impl R2Store {
         method: reqwest::Method,
         key: &str,
         body: &[u8],
+        extra_headers: &[(&str, &str)],
     ) -> Result<reqwest::Response, String> {
         // Prepend the content prefix (e.g. `dsl/`) so a root-relative key like
         // `data/x.rd` addresses `dsl/data/x.rd`. Empty prefix → unchanged (root).
@@ -178,6 +195,11 @@ impl R2Store {
             .header("x-amz-date", &amz_date)
             .header("x-amz-content-sha256", &payload_hash)
             .header(reqwest::header::AUTHORIZATION, authorization);
+        // Unsigned metadata headers (e.g. Cache-Control on a LOD PUT). SigV4 only
+        // requires the signed set to be present; extras are allowed.
+        for (name, value) in extra_headers {
+            req = req.header(*name, *value);
+        }
         if method == reqwest::Method::PUT {
             req = req.body(body.to_vec());
         }

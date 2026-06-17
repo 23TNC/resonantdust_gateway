@@ -119,8 +119,11 @@ pub async fn ensure(pool: &Pool, size: u32, rest: &str) -> Result<Vec<u8>, LodEr
     let out = downscale(&master, size)
         .map_err(|e| LodError::new(StatusCode::UNPROCESSABLE_ENTITY, e))?;
 
+    // Immutable cache directive baked into the object so the r2.dev public URL
+    // (the client's R2-direct hot path) serves it from disk cache on re-fetch,
+    // matching the gate response's own Cache-Control.
     store
-        .put(&lod_key, &out)
+        .put_cached(&lod_key, &out, "public, max-age=31536000, immutable")
         .await
         .map_err(|e| LodError::new(StatusCode::BAD_GATEWAY, e))?;
 
