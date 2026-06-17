@@ -404,7 +404,15 @@ async fn serve_lod(
             if err.status != StatusCode::NOT_FOUND {
                 tracing::warn!(status = %err.status, msg = %err.msg, "lod: ensure failed");
             }
-            (err.status, err.msg).into_response()
+            // CORS on errors too: the client fetches cross-origin, so without this
+            // header the browser can't read even a clean 404 — it surfaces as an
+            // opaque `TypeError: Failed to fetch` (masterless stems hit this).
+            (
+                err.status,
+                [(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")],
+                err.msg,
+            )
+                .into_response()
         }
     }
 }

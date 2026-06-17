@@ -1,15 +1,15 @@
 {
-  "build": 139,
-  "generated": "2026-06-17T21:40:57Z",
+  "build": 141,
+  "generated": "2026-06-17T22:36:29Z",
   "components": {
     "shared": { "hash": "0c56740ca573910dbfbae3f31e2d5f6f177ca1ef1c8f7b52c585833fc3026fd6", "seq": 132, "ts": "2026-06-17T18:52:00Z" },
     "shard": { "hash": "cfde926a0b44aa66f54158d89dd81f815202f21b8b9a52d653bb7dcd918c2da4", "seq": 133, "ts": "2026-06-17T18:52:00Z" },
     "players": { "hash": "d35a8305ff9359a535bf00e050528ff531af519cc164e3ee765b676d0b92c5b3", "seq": 134, "ts": "2026-06-17T18:52:00Z" },
     "chat": { "hash": "327dc9fae578063b1728feafcc5ff92e811c67a1897ffadee7a8407cd5918aa7", "seq": 4, "ts": "2026-06-13T19:52:27Z" },
     "regionindex": { "hash": "88b165b5ce2062da6deb5d4a81355eb92bb89f18864941849e4b99eafb45b5c5", "seq": 5, "ts": "2026-06-13T19:52:27Z" },
-    "gate": { "hash": "37441b1298edccb1fe257e34761d1c069a9c874fcdbf649d454b9442f6df9374", "seq": 138, "ts": "2026-06-17T21:40:57Z" },
+    "gate": { "hash": "64f7e7930ce00d318da8d17a2c5f4fdfdb66ba2aa13178be078027390f778470", "seq": 140, "ts": "2026-06-17T22:36:29Z" },
     "content": { "hash": "9bf63a9f01b56fe6dba60aff31c3d0806d46cafee0be9b5c5722e7b81c6f01e1", "seq": 123, "ts": "2026-06-16T13:03:15Z" },
     "client": { "hash": "1cf35419007c2a2f53af2921c466eaf94de8e3f178a0a9431035fc26021fb9c6", "seq": 124, "ts": "2026-06-16T13:03:15Z" },
-    "view": { "hash": "c4470fd83a9a7e6389117235b7a2dc5e00d9f369a510c9906b2544aaa54b68b2", "seq": 139, "ts": "2026-06-17T21:40:57Z" }
+    "view": { "hash": "1315fda110b661666c1cb7887453b8e28ccf9330f715c8a0ac65ce81ef44c218", "seq": 141, "ts": "2026-06-17T22:36:29Z" }
   }
 }
