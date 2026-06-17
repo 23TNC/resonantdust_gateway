@@ -383,6 +383,12 @@ impl Pool {
         Ok(key)
     }
 
+    /// The texture R2 store (master + on-demand LOD bucket), if configured. Used
+    /// by the `/textures/lod` route to read masters and cache generated LODs.
+    pub fn texture_store(&self) -> Option<&Arc<crate::s3::R2Store>> {
+        self.texture_store.as_ref()
+    }
+
     /// The content-authority URL if this gate is a **peer** (`Some`), or `None`
     /// if this gate IS the authority. Used to gate authoring (peers reject
     /// `add`/`modify`) and to drive the poll task.

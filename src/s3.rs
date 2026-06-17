@@ -100,6 +100,26 @@ impl R2Store {
         resp.text().await.map_err(|e| format!("S3 GET {key}: read body: {e}"))
     }
 
+    /// GET an object's raw bytes (for binary objects like master/LOD PNGs).
+    /// Distinguishes absence from failure: `Ok(None)` on `404` (the caller treats
+    /// it as "generate it"), `Ok(Some(bytes))` on `2xx`, `Err` on any other
+    /// status / transport error. Unlike [`get`](Self::get) this never decodes as
+    /// UTF-8, so binary payloads survive intact.
+    pub async fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>, String> {
+        let resp = self.signed(reqwest::Method::GET, key, &[]).await?;
+        let status = resp.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if !status.is_success() {
+            return Err(format!("S3 GET {key}: HTTP {status}"));
+        }
+        resp.bytes()
+            .await
+            .map(|b| Some(b.to_vec()))
+            .map_err(|e| format!("S3 GET {key}: read body: {e}"))
+    }
+
     /// PUT `body` at `key` (overwriting).
     pub async fn put(&self, key: &str, body: &[u8]) -> Result<(), String> {
         let resp = self.signed(reqwest::Method::PUT, key, body).await?;

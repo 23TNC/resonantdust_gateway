@@ -33,6 +33,10 @@ hmac = "0.12"
 hex = "0.4"
 # Decode base64 master-texture uploads (the art editor ships PNGs over the ws call).
 base64 = "0.22"
+# On-demand LOD downscaling from masters (pure-Rust PNG decode/encode + Lanczos3
+# resize). default-features off → only the `png` codec, so no C deps and it
+# builds in the toolchain-free `rust:slim` image.
+image = { version = "0.25", default-features = false, features = ["png"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 # Upstream client to the SpacetimeDB shards. Must match the generator that
 # produced src/bindings/ (spacetime cli 2.3.0).

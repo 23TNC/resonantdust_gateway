@@ -10,6 +10,7 @@ mod config;
 mod connections;
 mod content;
 mod gather;
+mod lod;
 mod promise;
 mod propose;
 mod routing;
@@ -129,6 +130,10 @@ async fn main() {
         // build host's freshest snapshot (authority-only) so `latest` is an
         // out-of-band truth, independent of any one running binary.
         .route("/versions", get(serve_versions).put(put_versions))
+        // On-demand LOD: the client falls back here when its R2-direct fetch
+        // 404s. The gate serves the cached LOD or generates it from the master.
+        // `{*rest}` captures `<stem>.<channel>.png` (the stem has `/`s).
+        .route("/textures/lod/{size}/{*rest}", get(serve_lod))
         .with_state(pool);
 
     let listener = match TcpListener::bind(&listen).await {
@@ -371,6 +376,36 @@ async fn put_versions(
     match pool.set_latest_versions(body).await {
         Ok(n) => (StatusCode::OK, format!("versions: stored {n} bytes")),
         Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, format!("versions: store failed: {err}")),
+    }
+}
+
+/// `GET /textures/lod/{size}/{*rest}` — on-demand LOD. The client uses this as a
+/// fallback when its R2-direct fetch misses; the gate serves the cached LOD or
+/// generates it from the master (see [`lod::ensure`]). Returns `image/png` with a
+/// permissive CORS header (WebGL rejects cross-origin textures without it) and a
+/// long cache lifetime (the bytes for a `{size,stem,channel}` are immutable —
+/// versioning, when it lands, lives in the path, not in-place mutation).
+async fn serve_lod(
+    State(pool): State<Arc<connections::Pool>>,
+    axum::extract::Path((size, rest)): axum::extract::Path<(u32, String)>,
+) -> axum::response::Response {
+    match lod::ensure(&pool, size, &rest).await {
+        Ok(bytes) => (
+            [
+                (axum::http::header::CONTENT_TYPE, "image/png"),
+                (axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
+                (axum::http::header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Err(err) => {
+            // A 404 (no master) is normal — log noisier failures only.
+            if err.status != StatusCode::NOT_FOUND {
+                tracing::warn!(status = %err.status, msg = %err.msg, "lod: ensure failed");
+            }
+            (err.status, err.msg).into_response()
+        }
     }
 }
 
