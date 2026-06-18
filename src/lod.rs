@@ -27,6 +27,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use axum::http::StatusCode;
 
 use crate::connections::Pool;
+use crate::s3::R2Store;
 
 /// The LOD bucket sizes the client requests (mirrors `view/src/assets/lodUrls.ts`
 /// `LOD_SIZES`). We only generate these — an arbitrary `size` is rejected so a
@@ -51,10 +52,19 @@ impl LodError {
 }
 
 /// Ensure the LOD for `rest` (`<stem>.<channel>.png`) at `size` exists in R2 and
-/// return its PNG bytes — serving the cached object on a hit, generating from the
-/// master on a miss. `rest` is the wildcard tail of the route: the same relative
-/// key the client uses against R2, so master/LOD addressing is a pure prefix swap.
-pub async fn ensure(pool: &Pool, size: u32, rest: &str) -> Result<Vec<u8>, LodError> {
+/// return its PNG bytes. `rest` is the wildcard tail of the route: the same
+/// relative key the client uses against R2, so master/LOD addressing is a pure
+/// prefix swap. The R2 object key is version-LESS; `version` (the `?v=<hash>`
+/// master-version from the client) gates freshness: a cached object whose stored
+/// `srchash` differs from `version` is stale — regenerated from the current master
+/// and overwritten in place. `None` (a legacy client without `?v`) serves any
+/// cached object as-is.
+pub async fn ensure(
+    pool: &Pool,
+    size: u32,
+    rest: &str,
+    version: Option<&str>,
+) -> Result<Vec<u8>, LodError> {
     let store = pool.texture_store().ok_or_else(|| {
         LodError::new(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -85,10 +95,10 @@ pub async fn ensure(pool: &Pool, size: u32, rest: &str) -> Result<Vec<u8>, LodEr
     let lod_key = format!("textures/lod/{size}/{rest}");
     let master_key = format!("textures/master/{rest}");
 
-    // Fast path: already in R2 (the common case once warm) — serve without
-    // taking the generation lock.
-    if let Some(bytes) = store
-        .get_bytes(&lod_key)
+    // Fast path: a cached object that matches the requested version — serve
+    // without taking the generation lock. A version mismatch (master changed)
+    // falls through to regenerate.
+    if let Some(bytes) = fresh_cached(store, &lod_key, version)
         .await
         .map_err(|e| LodError::new(StatusCode::BAD_GATEWAY, e))?
     {
@@ -100,10 +110,9 @@ pub async fn ensure(pool: &Pool, size: u32, rest: &str) -> Result<Vec<u8>, LodEr
     let lock = key_lock(&lod_key);
     let _guard = lock.lock().await;
 
-    // Re-check inside the lock: a racing task may have generated it while we
-    // waited.
-    if let Some(bytes) = store
-        .get_bytes(&lod_key)
+    // Re-check inside the lock: a racing task may have generated the current
+    // version while we waited.
+    if let Some(bytes) = fresh_cached(store, &lod_key, version)
         .await
         .map_err(|e| LodError::new(StatusCode::BAD_GATEWAY, e))?
     {
@@ -119,16 +128,35 @@ pub async fn ensure(pool: &Pool, size: u32, rest: &str) -> Result<Vec<u8>, LodEr
     let out = downscale(&master, size)
         .map_err(|e| LodError::new(StatusCode::UNPROCESSABLE_ENTITY, e))?;
 
-    // Immutable cache directive baked into the object so the r2.dev public URL
-    // (the client's R2-direct hot path) serves it from disk cache on re-fetch,
-    // matching the gate response's own Cache-Control.
+    // Immutable cache directive (each `?v=` URL is a distinct immutable resource
+    // on the client/CDN) + the master-version `srchash` so a later request can
+    // tell whether this object is stale. R2 key is version-less → overwrite in
+    // place, no accumulation.
     store
-        .put_cached(&lod_key, &out, "public, max-age=31536000, immutable")
+        .put_lod(&lod_key, &out, "public, max-age=31536000, immutable", version)
         .await
         .map_err(|e| LodError::new(StatusCode::BAD_GATEWAY, e))?;
 
-    tracing::info!(key = %lod_key, bytes = out.len(), "lod: generated from master");
+    tracing::info!(key = %lod_key, bytes = out.len(), version = version.unwrap_or("-"), "lod: generated from master");
     Ok(out)
+}
+
+/// Return the cached LOD bytes IFF the object exists AND is current for `version`
+/// — i.e. `version` is `None` (legacy, serve anything) or the object's stored
+/// `srchash` equals `version`. A present-but-stale object returns `None`, so the
+/// caller regenerates from the current master.
+async fn fresh_cached(
+    store: &R2Store,
+    lod_key: &str,
+    version: Option<&str>,
+) -> Result<Option<Vec<u8>>, String> {
+    match store.get_with_meta(lod_key).await? {
+        Some((bytes, srchash)) => {
+            let current = version.map_or(true, |v| srchash.as_deref() == Some(v));
+            Ok(current.then_some(bytes))
+        }
+        None => Ok(None),
+    }
 }
 
 /// Decode `master_png`, Lanczos3-downscale it so its longest side is `size`

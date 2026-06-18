@@ -379,6 +379,14 @@ async fn put_versions(
     }
 }
 
+/// Query string for [`serve_lod`]. `v` is the master-version hash the client
+/// stamps (`?v=<hash>`) so the gate can detect a stale cached LOD; absent for a
+/// legacy client (then any cached object is served).
+#[derive(serde::Deserialize)]
+struct LodQuery {
+    v: Option<String>,
+}
+
 /// `GET /textures/lod/{size}/{*rest}` — on-demand LOD. The client uses this as a
 /// fallback when its R2-direct fetch misses; the gate serves the cached LOD or
 /// generates it from the master (see [`lod::ensure`]). Returns `image/png` with a
@@ -388,8 +396,9 @@ async fn put_versions(
 async fn serve_lod(
     State(pool): State<Arc<connections::Pool>>,
     axum::extract::Path((size, rest)): axum::extract::Path<(u32, String)>,
+    axum::extract::Query(q): axum::extract::Query<LodQuery>,
 ) -> axum::response::Response {
-    match lod::ensure(&pool, size, &rest).await {
+    match lod::ensure(&pool, size, &rest, q.v.as_deref()).await {
         Ok(bytes) => (
             [
                 (axum::http::header::CONTENT_TYPE, "image/png"),

@@ -120,6 +120,52 @@ impl R2Store {
             .map_err(|e| format!("S3 GET {key}: read body: {e}"))
     }
 
+    /// GET an object's bytes **and** its `srchash` metadata (the master-version
+    /// hash a generated LOD was stamped with). `Ok(None)` on 404, `Ok(Some((bytes,
+    /// srchash)))` on success (`srchash` is `None` for objects written before
+    /// versioning, or by a non-LOD path). The LOD ensure path uses this to decide
+    /// whether a cached object is still current for the requested version.
+    pub async fn get_with_meta(&self, key: &str) -> Result<Option<(Vec<u8>, Option<String>)>, String> {
+        let resp = self.signed(reqwest::Method::GET, key, &[], &[]).await?;
+        let status = resp.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if !status.is_success() {
+            return Err(format!("S3 GET {key}: HTTP {status}"));
+        }
+        let srchash = resp
+            .headers()
+            .get("x-amz-meta-srchash")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| format!("S3 GET {key}: read body: {e}"))?
+            .to_vec();
+        Ok(Some((bytes, srchash)))
+    }
+
+    /// PUT a generated LOD: immutable `Cache-Control` (so the version-stamped
+    /// public URL is disk-cacheable) plus the `srchash` master-version it was
+    /// generated from, stored as object metadata. The R2 key is version-LESS
+    /// (overwrite-in-place — cache-busting rides the `?v=` query on the client
+    /// URL, not the object key), so old versions never accumulate in the bucket.
+    pub async fn put_lod(
+        &self,
+        key: &str,
+        body: &[u8],
+        cache_control: &str,
+        srchash: Option<&str>,
+    ) -> Result<(), String> {
+        let mut extra = vec![("cache-control", cache_control)];
+        if let Some(h) = srchash {
+            extra.push(("x-amz-meta-srchash", h));
+        }
+        self.put_with(key, body, &extra).await
+    }
+
     /// PUT `body` at `key` (overwriting).
     pub async fn put(&self, key: &str, body: &[u8]) -> Result<(), String> {
         self.put_with(key, body, &[]).await
