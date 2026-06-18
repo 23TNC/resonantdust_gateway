@@ -141,11 +141,12 @@ pub async fn ensure(
     Ok(out)
 }
 
-/// Return the cached LOD bytes IFF the object exists AND is current for `version`
-/// — i.e. `version` is `None` (legacy, serve anything) or the object's stored
+/// Return the cached object's bytes IFF it exists AND is current for `version` —
+/// i.e. `version` is `None` (legacy, serve anything) or the object's stored
 /// `srchash` equals `version`. A present-but-stale object returns `None`, so the
-/// caller regenerates from the current master.
-async fn fresh_cached(
+/// caller regenerates from the current master. Generic over the artifact kind
+/// (LOD PNGs, geometry sidecars — see `geometry.rs`), keyed only by the R2 key.
+pub(crate) async fn fresh_cached(
     store: &R2Store,
     lod_key: &str,
     version: Option<&str>,
@@ -186,12 +187,13 @@ fn downscale(master_png: &[u8], size: u32) -> Result<Vec<u8>, String> {
     Ok(buf)
 }
 
-/// The process-wide per-LOD-key generation lock. One `tokio::Mutex` per `lod_key`
-/// so only the first of N concurrent misses for the same key pulls + generates;
-/// the rest wait and then read the freshly-written object. Entries are bounded by
-/// the texture working set (one per distinct generated LOD) and left in place —
-/// a slow leak at most, swept whenever a GC of generated LODs lands.
-fn key_lock(key: &str) -> Arc<tokio::sync::Mutex<()>> {
+/// The process-wide per-key generation lock. One `tokio::Mutex` per R2 `key` so
+/// only the first of N concurrent misses for the same key pulls + generates; the
+/// rest wait and then read the freshly-written object. Shared by the LOD and
+/// geometry paths (their keys never collide — distinct prefixes). Entries are
+/// bounded by the texture working set and left in place — a slow leak at most,
+/// swept whenever a GC of generated artifacts lands.
+pub(crate) fn key_lock(key: &str) -> Arc<tokio::sync::Mutex<()>> {
     static LOCKS: OnceLock<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> = OnceLock::new();
     let map = LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
     let mut guard = map.lock().unwrap();

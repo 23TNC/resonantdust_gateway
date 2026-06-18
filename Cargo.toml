@@ -52,3 +52,7 @@ resonantdust-protocol = { path = "shared/protocol" }
 # Recipe glue (run a recipe → ActionPlan over a CardStore) — moved out of the
 # gate into shared so the client reuses it. The gate's Snapshot impls CardStore.
 resonantdust-rules = { path = "shared/rules" }
+# Silhouette geometry sidecars from master alpha (marching squares + VW + earcut).
+# `generate` pulls image+earcutr (pure-Rust, build in rust:slim); the wasm client
+# depends on the same crate WITHOUT the feature, for the types only.
+resonantdust-geometry = { path = "shared/geometry", features = ["generate"] }

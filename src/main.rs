@@ -10,6 +10,7 @@ mod config;
 mod connections;
 mod content;
 mod gather;
+mod geometry;
 mod lod;
 mod promise;
 mod propose;
@@ -134,6 +135,10 @@ async fn main() {
         // 404s. The gate serves the cached LOD or generates it from the master.
         // `{*rest}` captures `<stem>.<channel>.png` (the stem has `/`s).
         .route("/textures/lod/{size}/{*rest}", get(serve_lod))
+        // Per-sprite silhouette geometry sidecars, derived from the master alpha
+        // and cached in R2 (the geometry bundle is assembled from these). `{*rest}`
+        // captures `<stem>.json`.
+        .route("/textures/geo/{*rest}", get(serve_geo))
         .with_state(pool);
 
     let listener = match TcpListener::bind(&listen).await {
@@ -416,6 +421,40 @@ async fn serve_lod(
             // CORS on errors too: the client fetches cross-origin, so without this
             // header the browser can't read even a clean 404 — it surfaces as an
             // opaque `TypeError: Failed to fetch` (masterless stems hit this).
+            (
+                err.status,
+                [(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")],
+                err.msg,
+            )
+                .into_response()
+        }
+    }
+}
+
+/// `GET /textures/geo/{*rest}` — per-sprite silhouette geometry sidecar
+/// (`<stem>.json`). Serves the cached sidecar or generates it from the master
+/// alpha (see [`geometry::ensure`]). Returns `application/json` with the same
+/// permissive CORS + immutable-cache headers as the LOD route; `?v=<hash>` gates
+/// freshness against the master version.
+async fn serve_geo(
+    State(pool): State<Arc<connections::Pool>>,
+    axum::extract::Path(rest): axum::extract::Path<String>,
+    axum::extract::Query(q): axum::extract::Query<LodQuery>,
+) -> axum::response::Response {
+    match geometry::ensure(&pool, &rest, q.v.as_deref()).await {
+        Ok(bytes) => (
+            [
+                (axum::http::header::CONTENT_TYPE, "application/json"),
+                (axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
+                (axum::http::header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Err(err) => {
+            if err.status != StatusCode::NOT_FOUND {
+                tracing::warn!(status = %err.status, msg = %err.msg, "geo: ensure failed");
+            }
             (
                 err.status,
                 [(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")],
