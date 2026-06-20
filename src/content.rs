@@ -510,7 +510,7 @@ async fn fetch_sources(
 /// `GET` a URL and return its body as text, mapping a transport error or any
 /// non-2xx status into a human-readable `Err` (so a 404 on a manifest-listed key
 /// fails the load loudly rather than silently dropping a source).
-async fn fetch_text(client: &reqwest::Client, url: &str) -> Result<String, String> {
+pub(crate) async fn fetch_text(client: &reqwest::Client, url: &str) -> Result<String, String> {
     let resp = client.get(url).send().await.map_err(|e| format!("GET {url}: {e}"))?;
     let status = resp.status();
     if !status.is_success() {

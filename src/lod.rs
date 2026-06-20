@@ -27,7 +27,6 @@ use std::sync::{Arc, Mutex, OnceLock};
 use axum::http::StatusCode;
 
 use crate::connections::Pool;
-use crate::s3::R2Store;
 
 /// The LOD bucket sizes the client requests (mirrors `view/src/assets/lodUrls.ts`
 /// `LOD_SIZES`). We only generate these — an arbitrary `size` is rejected so a
@@ -51,20 +50,15 @@ impl LodError {
     }
 }
 
-/// Ensure the LOD for `rest` (`<stem>.<channel>.png`) at `size` exists in R2 and
-/// return its PNG bytes. `rest` is the wildcard tail of the route: the same
-/// relative key the client uses against R2, so master/LOD addressing is a pure
-/// prefix swap. The R2 object key is version-LESS; `version` (the `?v=<hash>`
-/// master-version from the client) gates freshness: a cached object whose stored
-/// `srchash` differs from `version` is stale — regenerated from the current master
-/// and overwritten in place. `None` (a legacy client without `?v`) serves any
-/// cached object as-is.
-pub async fn ensure(
-    pool: &Pool,
-    size: u32,
-    rest: &str,
-    version: Option<&str>,
-) -> Result<Vec<u8>, LodError> {
+/// Ensure the LOD for the request path `rest` exists in R2 and return its PNG
+/// bytes. `rest` is the wildcard tail of the route, laid out as
+/// `<object_dir>/<version>/<size>/<variation>.<channel>.png` — version and size
+/// are PATH SEGMENTS (object above size), so a re-mastered object resolves to a
+/// DISTINCT key. The version is thus self-busting: a stale version is simply an
+/// absent key → 404 → regenerate from the current master (no `srchash` freshness
+/// check, no in-place overwrite). The master is version/size-less, so its key is
+/// `rest` minus the version + size segments.
+pub async fn ensure(pool: &Pool, rest: &str) -> Result<Vec<u8>, LodError> {
     let store = pool.texture_store().ok_or_else(|| {
         LodError::new(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -72,15 +66,30 @@ pub async fn ensure(
         )
     })?;
 
-    // ── Validate the request ───────────────────────────────────────────
-    if !LOD_SIZES.contains(&size) {
-        return Err(LodError::new(StatusCode::BAD_REQUEST, format!("bad LOD size {size}")));
-    }
+    // ── Parse + validate the request ───────────────────────────────────
     // No traversal — `rest` lands in an object key.
     if rest.contains("..") {
         return Err(LodError::new(StatusCode::BAD_REQUEST, "`..` not allowed in path"));
     }
-    let stem_channel = rest
+    // <object_dir…>/<version>/<size>/<variation>.<channel>.png — parse from the
+    // right (object_dir holds the leading `/`-bearing segments).
+    let parts: Vec<&str> = rest.split('/').collect();
+    let n = parts.len();
+    if n < 4 {
+        return Err(LodError::new(StatusCode::BAD_REQUEST, format!("malformed LOD path {rest:?}")));
+    }
+    let file = parts[n - 1];
+    let size: u32 = parts[n - 2]
+        .parse()
+        .map_err(|_| LodError::new(StatusCode::BAD_REQUEST, format!("bad LOD size {:?}", parts[n - 2])))?;
+    if !LOD_SIZES.contains(&size) {
+        return Err(LodError::new(StatusCode::BAD_REQUEST, format!("bad LOD size {size}")));
+    }
+    // parts[n - 3] is the version segment — encoded in the key, so freshness is
+    // implicit (a stale version is a different, absent key, not a stale hit).
+    let object_dir = parts[..n - 3].join("/");
+
+    let stem_channel = file
         .strip_suffix(".png")
         .ok_or_else(|| LodError::new(StatusCode::BAD_REQUEST, "path must end with .png"))?;
     let channel = stem_channel.rsplit('.').next().unwrap_or_default();
@@ -91,14 +100,13 @@ pub async fn ensure(
         ));
     }
 
-    // master/LOD keys are the same relative path under different prefixes.
-    let lod_key = format!("textures/lod/{size}/{rest}");
-    let master_key = format!("textures/master/{rest}");
+    // The LOD key IS the versioned request path; the master is version/size-less.
+    let lod_key = format!("textures/lod/{rest}");
+    let master_key = format!("textures/master/{object_dir}/{file}");
 
-    // Fast path: a cached object that matches the requested version — serve
-    // without taking the generation lock. A version mismatch (master changed)
-    // falls through to regenerate.
-    if let Some(bytes) = fresh_cached(store, &lod_key, version)
+    // Fast path: the versioned object exists → serve without taking the lock.
+    if let Some(bytes) = store
+        .get_bytes(&lod_key)
         .await
         .map_err(|e| LodError::new(StatusCode::BAD_GATEWAY, e))?
     {
@@ -110,9 +118,9 @@ pub async fn ensure(
     let lock = key_lock(&lod_key);
     let _guard = lock.lock().await;
 
-    // Re-check inside the lock: a racing task may have generated the current
-    // version while we waited.
-    if let Some(bytes) = fresh_cached(store, &lod_key, version)
+    // Re-check inside the lock: a racing task may have generated it while we waited.
+    if let Some(bytes) = store
+        .get_bytes(&lod_key)
         .await
         .map_err(|e| LodError::new(StatusCode::BAD_GATEWAY, e))?
     {
@@ -128,36 +136,15 @@ pub async fn ensure(
     let out = downscale(&master, size)
         .map_err(|e| LodError::new(StatusCode::UNPROCESSABLE_ENTITY, e))?;
 
-    // Immutable cache directive (each `?v=` URL is a distinct immutable resource
-    // on the client/CDN) + the master-version `srchash` so a later request can
-    // tell whether this object is stale. R2 key is version-less → overwrite in
-    // place, no accumulation.
+    // Immutable cache directive — the versioned key is a distinct immutable
+    // resource (a re-master writes a NEW key), so it's safe to cache forever.
     store
-        .put_lod(&lod_key, &out, "public, max-age=31536000, immutable", version)
+        .put_cached(&lod_key, &out, "public, max-age=31536000, immutable")
         .await
         .map_err(|e| LodError::new(StatusCode::BAD_GATEWAY, e))?;
 
-    tracing::info!(key = %lod_key, bytes = out.len(), version = version.unwrap_or("-"), "lod: generated from master");
+    tracing::info!(key = %lod_key, bytes = out.len(), "lod: generated from master");
     Ok(out)
-}
-
-/// Return the cached object's bytes IFF it exists AND is current for `version` —
-/// i.e. `version` is `None` (legacy, serve anything) or the object's stored
-/// `srchash` equals `version`. A present-but-stale object returns `None`, so the
-/// caller regenerates from the current master. Generic over the artifact kind
-/// (LOD PNGs, geometry sidecars — see `geometry.rs`), keyed only by the R2 key.
-pub(crate) async fn fresh_cached(
-    store: &R2Store,
-    lod_key: &str,
-    version: Option<&str>,
-) -> Result<Option<Vec<u8>>, String> {
-    match store.get_with_meta(lod_key).await? {
-        Some((bytes, srchash)) => {
-            let current = version.map_or(true, |v| srchash.as_deref() == Some(v));
-            Ok(current.then_some(bytes))
-        }
-        None => Ok(None),
-    }
 }
 
 /// Decode `master_png`, Lanczos3-downscale it so its longest side is `size`

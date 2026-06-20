@@ -4,8 +4,7 @@
 //! triangulation, computed from the master alpha) lazily on first request and
 //! cache it in R2 thereafter. The heavy lifting (marching squares + Visvalingam–
 //! Whyatt + earcut) lives in the shared `resonantdust-geometry` crate; this is
-//! only the master-fetch + cache + version plumbing, reusing the LOD path's
-//! freshness check and per-key lock.
+//! only the master-fetch + cache plumbing, reusing the LOD path's per-key lock.
 //!
 //! Delivery: the client blocks on a geometry BUNDLE at login (assembled from these
 //! per-object pieces, co-versioned with the manifest). This per-object path is the
@@ -14,7 +13,7 @@
 use axum::http::StatusCode;
 
 use crate::connections::Pool;
-use crate::lod::{fresh_cached, key_lock};
+use crate::lod::key_lock;
 
 /// The master channel whose alpha is the silhouette. `albedo` is what the client
 /// displays (and de-light leaves alpha untouched), so the geometry matches the
@@ -34,12 +33,13 @@ impl GeoError {
     }
 }
 
-/// Ensure the sidecar for `rest` (`<stem>.json`) exists in R2 and return its JSON
-/// bytes. The R2 object key is version-less; `version` (`?v=<hash>`, the master's
-/// srchash) gates freshness exactly like [`crate::lod::ensure`]: a cached object
-/// whose stored `srchash` differs is stale, regenerated from the current master
-/// and overwritten in place.
-pub async fn ensure(pool: &Pool, rest: &str, version: Option<&str>) -> Result<Vec<u8>, GeoError> {
+/// Ensure the sidecar for the request path `rest` exists in R2 and return its
+/// JSON bytes. `rest` is laid out as `<object_dir>/<version>/<variation>.json`,
+/// mirroring [`crate::lod::ensure`]: the version is a PATH SEGMENT at the object
+/// boundary, so a re-mastered object is a distinct key (404 → regenerate), no
+/// `srchash` freshness check. The master is version-less, so its key drops the
+/// version segment.
+pub async fn ensure(pool: &Pool, rest: &str) -> Result<Vec<u8>, GeoError> {
     let store = pool.texture_store().ok_or_else(|| {
         GeoError::new(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -51,15 +51,25 @@ pub async fn ensure(pool: &Pool, rest: &str, version: Option<&str>) -> Result<Ve
     if rest.contains("..") {
         return Err(GeoError::new(StatusCode::BAD_REQUEST, "`..` not allowed in path"));
     }
-    let stem = rest
+    // <object_dir…>/<version>/<variation>.json — parse from the right.
+    let parts: Vec<&str> = rest.split('/').collect();
+    let n = parts.len();
+    if n < 3 {
+        return Err(GeoError::new(StatusCode::BAD_REQUEST, format!("malformed geo path {rest:?}")));
+    }
+    let file = parts[n - 1];
+    // parts[n - 2] is the version segment — encoded in the key (no freshness check).
+    let object_dir = parts[..n - 2].join("/");
+    let variation = file
         .strip_suffix(".json")
         .ok_or_else(|| GeoError::new(StatusCode::BAD_REQUEST, "path must end with .json"))?;
 
     let geo_key = format!("textures/geo/{rest}");
-    let master_key = format!("textures/master/{stem}.{ALPHA_CHANNEL}.png");
+    let master_key = format!("textures/master/{object_dir}/{variation}.{ALPHA_CHANNEL}.png");
 
-    // Fast path: a cached sidecar matching the requested version.
-    if let Some(bytes) = fresh_cached(store, &geo_key, version)
+    // Fast path: the versioned sidecar exists.
+    if let Some(bytes) = store
+        .get_bytes(&geo_key)
         .await
         .map_err(|e| GeoError::new(StatusCode::BAD_GATEWAY, e))?
     {
@@ -69,7 +79,8 @@ pub async fn ensure(pool: &Pool, rest: &str, version: Option<&str>) -> Result<Ve
     // Slow path under the per-key lock so a burst of identical misses collapses.
     let lock = key_lock(&geo_key);
     let _guard = lock.lock().await;
-    if let Some(bytes) = fresh_cached(store, &geo_key, version)
+    if let Some(bytes) = store
+        .get_bytes(&geo_key)
         .await
         .map_err(|e| GeoError::new(StatusCode::BAD_GATEWAY, e))?
     {
@@ -88,15 +99,10 @@ pub async fn ensure(pool: &Pool, rest: &str, version: Option<&str>) -> Result<Ve
         .map_err(|e| GeoError::new(StatusCode::INTERNAL_SERVER_ERROR, format!("serialize: {e}")))?;
 
     store
-        .put_lod(&geo_key, &json, "public, max-age=31536000, immutable", version)
+        .put_cached(&geo_key, &json, "public, max-age=31536000, immutable")
         .await
         .map_err(|e| GeoError::new(StatusCode::BAD_GATEWAY, e))?;
 
-    tracing::info!(
-        key = %geo_key,
-        bytes = json.len(),
-        version = version.unwrap_or("-"),
-        "geo: generated from master"
-    );
+    tracing::info!(key = %geo_key, bytes = json.len(), "geo: generated from master");
     Ok(json)
 }

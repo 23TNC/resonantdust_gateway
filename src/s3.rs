@@ -92,7 +92,7 @@ impl R2Store {
 
     /// GET an object's body as UTF-8 text.
     pub async fn get(&self, key: &str) -> Result<String, String> {
-        let resp = self.signed(reqwest::Method::GET, key, &[], &[]).await?;
+        let resp = self.signed(reqwest::Method::GET, key, "", &[], &[]).await?;
         let status = resp.status();
         if !status.is_success() {
             return Err(format!("S3 GET {key}: HTTP {status}"));
@@ -106,7 +106,7 @@ impl R2Store {
     /// status / transport error. Unlike [`get`](Self::get) this never decodes as
     /// UTF-8, so binary payloads survive intact.
     pub async fn get_bytes(&self, key: &str) -> Result<Option<Vec<u8>>, String> {
-        let resp = self.signed(reqwest::Method::GET, key, &[], &[]).await?;
+        let resp = self.signed(reqwest::Method::GET, key, "", &[], &[]).await?;
         let status = resp.status();
         if status == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
@@ -118,52 +118,6 @@ impl R2Store {
             .await
             .map(|b| Some(b.to_vec()))
             .map_err(|e| format!("S3 GET {key}: read body: {e}"))
-    }
-
-    /// GET an object's bytes **and** its `srchash` metadata (the master-version
-    /// hash a generated LOD was stamped with). `Ok(None)` on 404, `Ok(Some((bytes,
-    /// srchash)))` on success (`srchash` is `None` for objects written before
-    /// versioning, or by a non-LOD path). The LOD ensure path uses this to decide
-    /// whether a cached object is still current for the requested version.
-    pub async fn get_with_meta(&self, key: &str) -> Result<Option<(Vec<u8>, Option<String>)>, String> {
-        let resp = self.signed(reqwest::Method::GET, key, &[], &[]).await?;
-        let status = resp.status();
-        if status == reqwest::StatusCode::NOT_FOUND {
-            return Ok(None);
-        }
-        if !status.is_success() {
-            return Err(format!("S3 GET {key}: HTTP {status}"));
-        }
-        let srchash = resp
-            .headers()
-            .get("x-amz-meta-srchash")
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_string);
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| format!("S3 GET {key}: read body: {e}"))?
-            .to_vec();
-        Ok(Some((bytes, srchash)))
-    }
-
-    /// PUT a generated LOD: immutable `Cache-Control` (so the version-stamped
-    /// public URL is disk-cacheable) plus the `srchash` master-version it was
-    /// generated from, stored as object metadata. The R2 key is version-LESS
-    /// (overwrite-in-place — cache-busting rides the `?v=` query on the client
-    /// URL, not the object key), so old versions never accumulate in the bucket.
-    pub async fn put_lod(
-        &self,
-        key: &str,
-        body: &[u8],
-        cache_control: &str,
-        srchash: Option<&str>,
-    ) -> Result<(), String> {
-        let mut extra = vec![("cache-control", cache_control)];
-        if let Some(h) = srchash {
-            extra.push(("x-amz-meta-srchash", h));
-        }
-        self.put_with(key, body, &extra).await
     }
 
     /// PUT `body` at `key` (overwriting).
@@ -181,10 +135,66 @@ impl R2Store {
         self.put_with(key, body, &[("cache-control", cache_control)]).await
     }
 
+    /// List every object key under `prefix` (root-relative, prefix stripped back
+    /// off so the result feeds straight into [`delete_prefix`]/[`get_bytes`]).
+    /// ListObjectsV2, following continuation tokens to completion. Used by the
+    /// texture eager-delete + GC to enumerate an object's LOD/geo subtree.
+    pub async fn list_prefix(&self, prefix: &str) -> Result<Vec<String>, String> {
+        let full = format!("{}{prefix}", self.prefix);
+        let mut keys = Vec::new();
+        let mut token: Option<String> = None;
+        loop {
+            // Query params MUST be sorted for SigV4: continuation-token < list-type < prefix.
+            let query = match &token {
+                Some(t) => format!(
+                    "continuation-token={}&list-type=2&prefix={}",
+                    uri_encode_query(t),
+                    uri_encode_query(&full)
+                ),
+                None => format!("list-type=2&prefix={}", uri_encode_query(&full)),
+            };
+            let resp = self.signed(reqwest::Method::GET, "", &query, &[], &[]).await?;
+            let status = resp.status();
+            if !status.is_success() {
+                return Err(format!("S3 LIST {prefix}: HTTP {status}"));
+            }
+            let body = resp.text().await.map_err(|e| format!("S3 LIST {prefix}: read body: {e}"))?;
+            for k in extract_all(&body, "Key") {
+                // Strip the store prefix so callers work in root-relative keys.
+                keys.push(k.strip_prefix(&self.prefix).unwrap_or(&k).to_string());
+            }
+            if extract_first(&body, "IsTruncated").as_deref() == Some("true") {
+                token = extract_first(&body, "NextContinuationToken");
+                if token.is_none() {
+                    break; // truncated but no token → bail rather than loop forever
+                }
+            } else {
+                break;
+            }
+        }
+        Ok(keys)
+    }
+
+    /// Delete every object under `prefix` (list + per-key DELETE). Idempotent: a
+    /// 404 on an individual key is treated as already-gone. Returns the count
+    /// deleted. Used to drop an object's stale LOD/geo subtree on re-master + GC.
+    pub async fn delete_prefix(&self, prefix: &str) -> Result<usize, String> {
+        let keys = self.list_prefix(prefix).await?;
+        for key in &keys {
+            let resp = self.signed(reqwest::Method::DELETE, key, "", &[], &[]).await?;
+            let status = resp.status();
+            if !status.is_success() && status != reqwest::StatusCode::NOT_FOUND {
+                let detail = resp.text().await.unwrap_or_default();
+                return Err(format!("S3 DELETE {key}: HTTP {status}: {detail}"));
+            }
+        }
+        Ok(keys.len())
+    }
+
     /// PUT with extra (unsigned) headers — SigV4 only requires the headers it
     /// signs to be present, so object metadata like `Cache-Control` rides along.
     async fn put_with(&self, key: &str, body: &[u8], extra: &[(&str, &str)]) -> Result<(), String> {
-        let resp = self.signed(reqwest::Method::PUT, key, body, extra).await?;
+        let resp = self.signed(reqwest::Method::PUT, key, "", body, extra).await?;
         let status = resp.status();
         if !status.is_success() {
             let detail = resp.text().await.unwrap_or_default();
@@ -196,18 +206,25 @@ impl R2Store {
     /// Sign + send one path-style request. Signs `host` / `x-amz-date` /
     /// `x-amz-content-sha256` (other headers reqwest adds stay unsigned, which
     /// SigV4 allows). `x-amz-content-sha256` is the real payload hash, which both
-    /// R2 and MinIO accept.
+    /// R2 and MinIO accept. `query` is the canonical query string (already sorted +
+    /// percent-encoded, no leading `?`) for subresource requests like
+    /// ListObjectsV2; empty for plain object GET/PUT/DELETE.
     async fn signed(
         &self,
         method: reqwest::Method,
         key: &str,
+        query: &str,
         body: &[u8],
         extra_headers: &[(&str, &str)],
     ) -> Result<reqwest::Response, String> {
         // Prepend the content prefix (e.g. `dsl/`) so a root-relative key like
         // `data/x.rd` addresses `dsl/data/x.rd`. Empty prefix → unchanged (root).
         let canonical_uri = format!("/{}/{}", self.bucket, uri_encode_path(&format!("{}{key}", self.prefix)));
-        let url = format!("{}{}", self.endpoint, canonical_uri);
+        let url = if query.is_empty() {
+            format!("{}{}", self.endpoint, canonical_uri)
+        } else {
+            format!("{}{}?{}", self.endpoint, canonical_uri, query)
+        };
 
         let now = chrono::Utc::now();
         let amz_date = now.format("%Y%m%dT%H%M%SZ").to_string();
@@ -221,7 +238,7 @@ impl R2Store {
         );
         // method \n uri \n query \n headers \n signed_headers \n payload_hash
         let canonical_request = format!(
-            "{method}\n{canonical_uri}\n\n{canonical_headers}\n{signed_headers}\n{payload_hash}"
+            "{method}\n{canonical_uri}\n{query}\n{canonical_headers}\n{signed_headers}\n{payload_hash}"
         );
 
         let scope = format!("{date_stamp}/{}/s3/aws4_request", self.region);
@@ -286,4 +303,42 @@ fn uri_encode_path(key: &str) -> String {
         }
     }
     out
+}
+
+/// Percent-encode an S3 query-string value per SigV4 (RFC3986 unreserved only —
+/// unlike [`uri_encode_path`], `/` IS encoded here, as a query value).
+fn uri_encode_query(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for &b in s.as_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// Text content of every non-nested `<tag>…</tag>` in `xml` — a cheap substring
+/// scan over ListObjectsV2 responses, avoiding an XML-parser dependency (our keys
+/// are all safe chars, so no entity decoding is needed).
+fn extract_all(xml: &str, tag: &str) -> Vec<String> {
+    let (open, close) = (format!("<{tag}>"), format!("</{tag}>"));
+    let mut out = Vec::new();
+    let mut rest = xml;
+    while let Some(i) = rest.find(&open) {
+        let after = &rest[i + open.len()..];
+        match after.find(&close) {
+            Some(j) => {
+                out.push(after[..j].to_string());
+                rest = &after[j + close.len()..];
+            }
+            None => break,
+        }
+    }
+    out
+}
+
+/// The first `<tag>…</tag>` text content in `xml`, or `None`.
+fn extract_first(xml: &str, tag: &str) -> Option<String> {
+    extract_all(xml, tag).into_iter().next()
 }

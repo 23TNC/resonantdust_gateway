@@ -25,7 +25,10 @@ use std::sync::Arc;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::{routing::get, Router};
+use axum::{
+    routing::{get, post},
+    Router,
+};
 use tokio::net::TcpListener;
 use tokio::signal;
 
@@ -115,8 +118,8 @@ async fn main() {
     // restart.
     if authority.is_some() {
         spawn_content_poll(pool.clone());
-    } else if let Some(src) = content_src {
-        spawn_content_poll_src(pool.clone(), src);
+    } else if content_src.is_some() {
+        spawn_content_poll_src(pool.clone());
     }
 
     let app = Router::new()
@@ -126,6 +129,11 @@ async fn main() {
         // locales the gate validates against, so they agree by construction.
         .route("/content", get(serve_content))
         .route("/content-version", get(serve_content_version))
+        // Force this gate to re-read its content source NOW (instead of waiting
+        // for the poll tick) and broadcast `content_changed` if the corpus moved.
+        // The manual analog of the poll loops — handy right after a `dsl upload`
+        // or master write, and the seam a future gate→gate refresh fan-out uses.
+        .route("/content/refresh", post(refresh_content))
         // Build fingerprints: baked component hashes + the live content version,
         // so a client can flag a stale deployment per-component. PUT pushes the
         // build host's freshest snapshot (authority-only) so `latest` is an
@@ -133,11 +141,13 @@ async fn main() {
         .route("/versions", get(serve_versions).put(put_versions))
         // On-demand LOD: the client falls back here when its R2-direct fetch
         // 404s. The gate serves the cached LOD or generates it from the master.
-        // `{*rest}` captures `<stem>.<channel>.png` (the stem has `/`s).
-        .route("/textures/lod/{size}/{*rest}", get(serve_lod))
+        // `{*rest}` captures `<object_dir>/<version>/<size>/<variation>.<channel>.png`
+        // — version + size are path segments (object above size), so a re-mastered
+        // object is a distinct key (see [`lod::ensure`]).
+        .route("/textures/lod/{*rest}", get(serve_lod))
         // Per-sprite silhouette geometry sidecars, derived from the master alpha
         // and cached in R2 (the geometry bundle is assembled from these). `{*rest}`
-        // captures `<stem>.json`.
+        // captures `<object_dir>/<version>/<variation>.json`.
         .route("/textures/geo/{*rest}", get(serve_geo))
         .with_state(pool);
 
@@ -200,13 +210,13 @@ async fn load_src_with_retry(src: &content::ContentSrc) -> content::LoadedConten
 }
 
 /// Spawn the object-store re-poll loop — an **object-store-backed authority**'s
-/// live-update path. Every `CONTENT_POLL_SECS` (default 10) it re-fetches the
-/// corpus; on a fingerprint change it revalidates, hot-swaps the live corpus, and
-/// broadcasts `content_changed` to this gate's clients. Peers see the new
-/// `/content-version` on their own poll and mirror it. A bad fetch/parse leaves
-/// live content untouched (a broken upload never reaches clients). This is the
-/// authority analog of [`spawn_content_poll`] (which mirrors an upstream gate).
-fn spawn_content_poll_src(pool: Arc<connections::Pool>, src: content::ContentSrc) {
+/// live-update path. Every `CONTENT_POLL_SECS` (default 10) it re-reads the corpus
+/// via [`connections::Pool::refresh_content`]; on a fingerprint change that
+/// revalidates, hot-swaps the live corpus, and broadcasts `content_changed` to
+/// this gate's clients. Peers see the new `/content-version` on their own poll and
+/// mirror it. A bad fetch/parse leaves live content untouched (a broken upload
+/// never reaches clients). The authority analog of [`spawn_content_poll`].
+fn spawn_content_poll_src(pool: Arc<connections::Pool>) {
     let secs = std::env::var("CONTENT_POLL_SECS")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
@@ -216,15 +226,8 @@ fn spawn_content_poll_src(pool: Arc<connections::Pool>, src: content::ContentSrc
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(secs));
         loop {
             tick.tick().await;
-            match content::poll_content_src(&src, pool.content_version_num()).await {
-                Ok(Some(next)) => {
-                    pool.swap_content(next);
-                    let version = pool.content_version_hex();
-                    tracing::info!(%version, "authority: content updated from store");
-                    pool.broadcast(resonantdust_protocol::protocol::GateMsg::content_changed(version));
-                }
-                Ok(None) => {} // unchanged — the common case
-                Err(e) => tracing::warn!(error = %e, "authority: store poll failed"),
+            if let Err(e) = pool.refresh_content().await {
+                tracing::warn!(error = %e, "authority: store poll failed");
             }
         }
     });
@@ -265,47 +268,15 @@ async fn fetch_authority_content(url: &str) -> content::LoadedContent {
 /// reload from this gate). This is the authority→peer→client propagation path —
 /// no content ever touches SpacetimeDB.
 fn spawn_content_poll(pool: Arc<connections::Pool>) {
-    let Some(base) = pool.content_authority().map(|s| s.trim_end_matches('/').to_string()) else {
+    if pool.content_authority().is_none() {
         return; // not a peer — nothing to poll
-    };
-    let ver_url = format!("{base}/content-version");
-    let content_url = format!("{base}/content");
+    }
     tokio::spawn(async move {
-        let client = connections::http_client();
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(3));
         loop {
             tick.tick().await;
-            let remote = match client.get(&ver_url).send().await {
-                Ok(r) => match r.text().await {
-                    Ok(t) => t.trim().to_string(),
-                    Err(_) => continue,
-                },
-                Err(_) => continue, // authority blip — try again next tick
-            };
-            if remote.is_empty() || remote == pool.content_version_hex() {
-                continue;
-            }
-            let body = match client.get(&content_url).send().await {
-                Ok(r) => match r.text().await {
-                    Ok(t) => t,
-                    Err(e) => {
-                        tracing::warn!(error = %e, "peer: read /content failed");
-                        continue;
-                    }
-                },
-                Err(e) => {
-                    tracing::warn!(error = %e, "peer: fetch /content failed");
-                    continue;
-                }
-            };
-            match content::build_from_payload(&body) {
-                Ok(next) => {
-                    pool.swap_content(next);
-                    let version = pool.content_version_hex();
-                    tracing::info!(%version, "peer: content updated from authority");
-                    pool.broadcast(resonantdust_protocol::protocol::GateMsg::content_changed(version));
-                }
-                Err(e) => tracing::warn!(error = %e, "peer: bad authority payload"),
+            if let Err(e) = pool.refresh_content().await {
+                tracing::warn!(error = %e, "peer: authority poll failed");
             }
         }
     });
@@ -333,6 +304,27 @@ async fn serve_content_version(State(pool): State<Arc<connections::Pool>>) -> im
         [(axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")],
         pool.content_version_hex(),
     )
+}
+
+/// `POST /content/refresh` — force this gate to re-read its content source now and
+/// broadcast `content_changed` if the corpus moved, instead of waiting up to a
+/// poll interval. Returns `{changed, version}`. Idempotent re-read (not an
+/// authoring write), so — like `/versions` — it's unguarded; works on authority
+/// and peer gates alike. This is the hook for an operator (or, later, a sibling
+/// gate) to push a just-uploaded corpus live immediately.
+async fn refresh_content(State(pool): State<Arc<connections::Pool>>) -> impl IntoResponse {
+    match pool.refresh_content().await {
+        Ok(o) => (
+            StatusCode::OK,
+            [(axum::http::header::CONTENT_TYPE, "application/json")],
+            format!("{{\"changed\":{},\"version\":\"{}\"}}\n", o.changed, o.version),
+        )
+            .into_response(),
+        Err(e) => {
+            tracing::warn!(error = %e, "content: manual refresh failed");
+            (StatusCode::BAD_GATEWAY, format!("refresh failed: {e}\n")).into_response()
+        }
+    }
 }
 
 /// `GET /versions` — the gate's build fingerprints. Merges the compile-time
@@ -384,26 +376,17 @@ async fn put_versions(
     }
 }
 
-/// Query string for [`serve_lod`]. `v` is the master-version hash the client
-/// stamps (`?v=<hash>`) so the gate can detect a stale cached LOD; absent for a
-/// legacy client (then any cached object is served).
-#[derive(serde::Deserialize)]
-struct LodQuery {
-    v: Option<String>,
-}
-
-/// `GET /textures/lod/{size}/{*rest}` — on-demand LOD. The client uses this as a
+/// `GET /textures/lod/{*rest}` — on-demand LOD. The client uses this as a
 /// fallback when its R2-direct fetch misses; the gate serves the cached LOD or
 /// generates it from the master (see [`lod::ensure`]). Returns `image/png` with a
 /// permissive CORS header (WebGL rejects cross-origin textures without it) and a
-/// long cache lifetime (the bytes for a `{size,stem,channel}` are immutable —
-/// versioning, when it lands, lives in the path, not in-place mutation).
+/// long cache lifetime — the versioned key is immutable (a re-master writes a new
+/// key, never mutates in place).
 async fn serve_lod(
     State(pool): State<Arc<connections::Pool>>,
-    axum::extract::Path((size, rest)): axum::extract::Path<(u32, String)>,
-    axum::extract::Query(q): axum::extract::Query<LodQuery>,
+    axum::extract::Path(rest): axum::extract::Path<String>,
 ) -> axum::response::Response {
-    match lod::ensure(&pool, size, &rest, q.v.as_deref()).await {
+    match lod::ensure(&pool, &rest).await {
         Ok(bytes) => (
             [
                 (axum::http::header::CONTENT_TYPE, "image/png"),
@@ -432,16 +415,15 @@ async fn serve_lod(
 }
 
 /// `GET /textures/geo/{*rest}` — per-sprite silhouette geometry sidecar
-/// (`<stem>.json`). Serves the cached sidecar or generates it from the master
-/// alpha (see [`geometry::ensure`]). Returns `application/json` with the same
-/// permissive CORS + immutable-cache headers as the LOD route; `?v=<hash>` gates
-/// freshness against the master version.
+/// (`<object_dir>/<version>/<variation>.json`). Serves the cached sidecar or
+/// generates it from the master alpha (see [`geometry::ensure`]). Returns
+/// `application/json` with the same permissive CORS + immutable-cache headers as
+/// the LOD route; the version in the path keys freshness.
 async fn serve_geo(
     State(pool): State<Arc<connections::Pool>>,
     axum::extract::Path(rest): axum::extract::Path<String>,
-    axum::extract::Query(q): axum::extract::Query<LodQuery>,
 ) -> axum::response::Response {
-    match geometry::ensure(&pool, &rest, q.v.as_deref()).await {
+    match geometry::ensure(&pool, &rest).await {
         Ok(bytes) => (
             [
                 (axum::http::header::CONTENT_TYPE, "application/json"),

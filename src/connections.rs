@@ -97,6 +97,13 @@ connector!(connect_regionindex, regionindex);
 
 /// Lazy pool of upstream connections, keyed by shard id where applicable.
 /// Cheap to share (`Arc<Pool>`); getters connect-on-miss and cache.
+/// Outcome of a [`Pool::refresh_content`] call: whether a new corpus version was
+/// applied (and broadcast), plus the version fingerprint this gate now serves.
+pub struct RefreshOutcome {
+    pub changed: bool,
+    pub version: String,
+}
+
 pub struct Pool {
     cfg: GateConfig,
     /// The DSL content the gate runs + serves: the [`Bundle`] the recipe
@@ -344,6 +351,73 @@ impl Pool {
         *self.content.write().unwrap() = Arc::new(next);
     }
 
+    /// This gate's content read source, derived from config exactly as the startup
+    /// load does: the S3 store (authoring authority) wins, else the public HTTP
+    /// base. `None` means a disk-backed authority. Peers don't use this — they pull
+    /// their upstream authority (see [`Pool::refresh_content`]).
+    fn content_src(&self) -> Option<crate::content::ContentSrc> {
+        if let Some(store) = &self.r2_store {
+            Some(crate::content::ContentSrc::S3(store.clone()))
+        } else {
+            self.cfg.content_base_url.clone().map(crate::content::ContentSrc::Http)
+        }
+    }
+
+    /// Re-read the corpus from this gate's content source NOW and, on a fingerprint
+    /// change, hot-swap the live corpus + broadcast `content_changed` to clients.
+    /// This is the single shared body of the background poll loops AND the manual
+    /// `POST /content/refresh` route (and the seam a future gate→gate refresh
+    /// fan-out hangs off):
+    ///   • peer              → pull the upstream authority (cheap `/content-version`
+    ///                         check first, then `/content` only if it moved),
+    ///   • S3/HTTP authority → re-poll the object store (build only on a change),
+    ///   • disk authority    → re-read local files.
+    /// Returns whether a new version landed + the (post-refresh) version. A fetch or
+    /// parse error leaves live content untouched — a broken upload never reaches
+    /// clients — and surfaces as `Err`.
+    pub async fn refresh_content(&self) -> Result<RefreshOutcome, String> {
+        // Peer: mirror the upstream authority. The `/content-version` text is the
+        // cheap change check — only re-fetch the full `/content` when it moved.
+        if let Some(url) = self.content_authority() {
+            let base = url.trim_end_matches('/');
+            let remote = crate::content::fetch_text(http_client(), &format!("{base}/content-version")).await?;
+            let remote = remote.trim();
+            if remote.is_empty() || remote == self.content_version_hex() {
+                return Ok(self.content_unchanged());
+            }
+            let body = crate::content::fetch_text(http_client(), &format!("{base}/content")).await?;
+            let next = crate::content::build_from_payload(&body)?;
+            return Ok(self.apply_content(next));
+        }
+        // Object-store authority: re-poll the store (`None` = fingerprint unchanged).
+        if let Some(src) = self.content_src() {
+            return match crate::content::poll_content_src(&src, self.content_version_num()).await? {
+                Some(next) => Ok(self.apply_content(next)),
+                None => Ok(self.content_unchanged()),
+            };
+        }
+        // Disk authority: re-read local files and apply if the fingerprint moved.
+        let next = crate::content::load_content();
+        if next.version == self.content_version_num() {
+            return Ok(self.content_unchanged());
+        }
+        Ok(self.apply_content(next))
+    }
+
+    /// A no-op refresh result — the corpus matched what we already serve.
+    fn content_unchanged(&self) -> RefreshOutcome {
+        RefreshOutcome { changed: false, version: self.content_version_hex() }
+    }
+
+    /// Swap in `next`, broadcast `content_changed`, and report the new version.
+    fn apply_content(&self, next: crate::content::LoadedContent) -> RefreshOutcome {
+        self.swap_content(next);
+        let version = self.content_version_hex();
+        tracing::info!(%version, "content: refreshed");
+        self.broadcast(resonantdust_protocol::protocol::GateMsg::content_changed(version.clone()));
+        RefreshOutcome { changed: true, version }
+    }
+
     /// Write an edited master texture channel to the texture R2 bucket at
     /// `textures/master/<aspect>/<faction>/<variant>.<channel>.png` — the in-app
     /// art editor's "save master" path, mirroring `add_content` for DSL. Validates
@@ -380,6 +454,21 @@ impl Pool {
         })?;
         let key = format!("textures/master/{aspect}/{faction}/{variant}.{channel}.png");
         store.put(&key, &bytes).await?;
+        // Re-mastering invalidates every cached LOD/geo version + size for this
+        // object — drop the subtree so the next request regenerates from the new
+        // master (version-in-path means a stale version is just an absent key, so
+        // this is hygiene, not correctness: a miss is a storage leak the GC sweeps,
+        // never a stale render). The object dir mirrors the master path minus the
+        // `<variant>.<channel>.png` leaf.
+        let obj_dir = format!("{aspect}/{faction}");
+        for kind in ["lod", "geo"] {
+            let prefix = format!("textures/{kind}/{obj_dir}/");
+            match store.delete_prefix(&prefix).await {
+                Ok(n) if n > 0 => tracing::info!(%prefix, count = n, "upload_master: cleared stale {kind} subtree"),
+                Ok(_) => {}
+                Err(e) => tracing::warn!(%prefix, error = %e, "upload_master: failed to clear stale {kind} subtree"),
+            }
+        }
         Ok(key)
     }
 
