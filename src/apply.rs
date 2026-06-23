@@ -208,6 +208,15 @@ pub async fn apply(
     // Per-product container disk radius, so a recipe output lands in a cell that
     // EXISTS in its target region disk (mirrors create_card's `distance`).
     let mut create_distances: Vec<u16> = Vec::new();
+    // Per-product exact cell, or `-1` for "first free cell" (the inventory path).
+    // A `create … .location` product pins its cell (a bound card's world spot).
+    let mut create_cells: Vec<i64> = Vec::new();
+    // `move` effects → relocate an existing card to a zone, placed first-free.
+    let mut move_ids: Vec<u32> = Vec::new();
+    let mut move_surfaces: Vec<u8> = Vec::new();
+    let mut move_macro_zones: Vec<u64> = Vec::new();
+    let mut move_owners: Vec<u32> = Vec::new();
+    let mut move_distances: Vec<u16> = Vec::new();
     let mut stat_souls: Vec<u32> = Vec::new();
     let mut stat_fields: Vec<u8> = Vec::new();
     let mut stat_bytes: Vec<u8> = Vec::new();
@@ -240,6 +249,7 @@ pub async fn apply(
                 owner_id,
                 stock,
                 tag,
+                micro_location,
             } => {
                 let bundle = pool.content();
                 let packed_def = bundle
@@ -254,6 +264,7 @@ pub async fn apply(
                 // translation, so a created card needs no follow-up SetCardStock.
                 create_stocks.push(*stock);
                 create_tags.push((*tag).min(u8::MAX as u32) as u8);
+                create_cells.push(micro_location.map(|m| m as i64).unwrap_or(-1));
                 // A created stat card increments its soul's counter.
                 if let Some((field, byte)) = stat_slot(def_key) {
                     if let Some(soul) = owning_soul(snap, *owner_id) {
@@ -263,6 +274,17 @@ pub async fn apply(
                         stat_deltas.push(1);
                     }
                 }
+            }
+            Effect::Move {
+                card_id,
+                surface,
+                macro_zone,
+                owner_id,
+            } => {
+                move_ids.push(*card_id);
+                move_surfaces.push(*surface);
+                move_macro_zones.push(*macro_zone);
+                move_owners.push(*owner_id);
             }
             Effect::CreateDeferred { .. } => {
                 return Err(
@@ -313,6 +335,13 @@ pub async fn apply(
         create_distances.push(crate::gather::region_distance(pool, mz).await);
     }
 
+    // Disk radius per moved card's destination — same authority as creates, so a
+    // relocated card lands on a cell that exists in the target region disk.
+    for i in 0..move_ids.len() {
+        let mz = resonantdust_codec::packed::pack_macro_zone_full(move_owners[i], move_surfaces[i], 0, 0);
+        move_distances.push(crate::gather::region_distance(pool, mz).await);
+    }
+
     let (done_tx, done_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
     let dispatch = cards_conn.reducers.apply_action_then(
         now_ms,
@@ -327,6 +356,7 @@ pub async fn apply(
         create_distances,
         create_stocks,
         create_tags,
+        create_cells,
         stat_souls,
         stat_fields,
         stat_bytes,
@@ -337,6 +367,11 @@ pub async fn apply(
         reroot_macro_zones,
         reroot_micro_locations,
         reroot_stack_states,
+        move_ids,
+        move_surfaces,
+        move_macro_zones,
+        move_owners,
+        move_distances,
         move |_ctx, res| {
             let _ = done_tx.send(res.unwrap_or_else(|e| Err(format!("internal: {e}"))));
         },
