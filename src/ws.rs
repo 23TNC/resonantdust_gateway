@@ -1052,7 +1052,7 @@ async fn sdk_create_card(
         u("owner_id") as u32,
         u("surface") as u8,
         u("packed_definition") as u16,
-        u("stock") as u32,
+        u("stock"),
         u("macro_zone"),
         u("q") as u8,
         u("r") as u8,
@@ -1089,18 +1089,18 @@ async fn sdk_move_cards(
     finish_call(tx, cid, "move_cards", dispatch, done_rx).await;
 }
 
-/// `move_soul` via the SDK binding — P4. The gate has injected `arrival_ms`
+/// `move_card` via the SDK binding — P4. The gate has injected `arrival_ms`
 /// (re-derived from speed + tile costs) above; `dest` rebuilds the `TilePoint`
 /// the client sent as a nested object.
-async fn sdk_move_soul(
+async fn sdk_move_card(
     cards: Option<&Arc<bindings::shard::DbConnection>>,
     tx: &UnboundedSender<Vec<u8>>,
     cid: u32,
     args: &serde_json::Value,
 ) {
-    use bindings::shard::move_soul;
+    use bindings::shard::move_card;
     let Some(conn) = cards else {
-        let _ = tx.send(GateMsg::call_err(cid, "move_soul: cards upstream not connected".to_string()));
+        let _ = tx.send(GateMsg::call_err(cid, "move_card: cards upstream not connected".to_string()));
         return;
     };
     let u = |k: &str| args.get(k).and_then(serde_json::Value::as_u64).unwrap_or(0);
@@ -1112,7 +1112,7 @@ async fn sdk_move_soul(
         micro_location: d("micro_location") as u32,
     };
     let (done_tx, done_rx) = tokio::sync::oneshot::channel::<Vec<u8>>();
-    let dispatch = conn.reducers.move_soul_then(
+    let dispatch = conn.reducers.move_card_then(
         u("client_time_ms"),
         u("caller_player_id") as u32,
         u("soul_id") as u32,
@@ -1122,9 +1122,9 @@ async fn sdk_move_soul(
         dest,
         u("depart_ms"),
         u("arrival_ms"),
-        move |_ctx, res| { let _ = done_tx.send(reply_for(cid, "move_soul", res)); },
+        move |_ctx, res| { let _ = done_tx.send(reply_for(cid, "move_card", res)); },
     );
-    finish_call(tx, cid, "move_soul", dispatch, done_rx).await;
+    finish_call(tx, cid, "move_card", dispatch, done_rx).await;
 }
 
 /// `send_chat_message` via the SDK binding — P4. No gate injection; chat db.
@@ -1233,9 +1233,9 @@ async fn relay_call(
             if let Some(key) = obj.get("card_key").and_then(|v| v.as_str()).map(String::from) {
                 let bundle = pool.content();
                 let packed = bundle.packed_def(&key).unwrap_or(0);
-                // Seed the new card's per-instance stock u32 from its `@define`
+                // Seed the new card's per-instance stock u64 from its `@define`
                 // stock defaults (the content-agnostic shard can't derive these).
-                let stock = resonantdust_dsl::bridge::stock_default_u32(&bundle, &key);
+                let stock = resonantdust_dsl::bridge::stock_default_u64(&bundle, &key);
                 obj.remove("card_key");
                 obj.insert("packed_definition".to_string(), serde_json::json!(packed));
                 obj.insert("stock".to_string(), serde_json::json!(stock));
@@ -1265,12 +1265,12 @@ async fn relay_call(
             }
         }
     }
-    // move_soul: the gate owns the CONTENT-derived timing. Re-derive `arrival_ms`
+    // move_card: the gate owns the CONTENT-derived timing. Re-derive `arrival_ms`
     // from the soul's `speed` (`soul_def`) and the `from`/`dest` tile `cost`s
     // (worldgen), validate hex-adjacency, and OVERRIDE the client's `arrival_ms`.
     // The shard separately verifies `soul_def` + the soul's real cell at
     // `depart_ms` == `from`, so a spoofed input just gets the move rejected there.
-    if reducer == "move_soul" {
+    if reducer == "move_card" {
         let bundle = pool.content();
         let g = |k: &str| args.get(k).and_then(serde_json::Value::as_i64);
         let soul_def = args.get("soul_def").and_then(serde_json::Value::as_u64).unwrap_or(0) as u16;
@@ -1293,7 +1293,7 @@ async fn relay_call(
             (world_tile(zq, lq), world_tile(zr, lr))
         };
         let reject = |msg: String| {
-            let _ = tx.send(GateMsg::call_err(cid, format!("move_soul: {msg}")));
+            let _ = tx.send(GateMsg::call_err(cid, format!("move_card: {msg}")));
         };
         let adjacent =
             matches!((dq - from_q, dr - from_r), (1, 0) | (-1, 0) | (0, 1) | (0, -1) | (1, -1) | (-1, 1));
@@ -1327,8 +1327,8 @@ async fn relay_call(
         sdk_move_cards(cards, tx, cid, &args).await;
         return;
     }
-    if reducer == "move_soul" {
-        sdk_move_soul(cards, tx, cid, &args).await;
+    if reducer == "move_card" {
+        sdk_move_card(cards, tx, cid, &args).await;
         return;
     }
     if reducer == "send_chat_message" {

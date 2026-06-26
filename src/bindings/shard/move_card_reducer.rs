@@ -13,7 +13,7 @@ use super::tile_point_type::TilePoint;
 
 #[derive(__lib::ser::Serialize, __lib::de::Deserialize, Clone, PartialEq, Debug)]
 #[sats(crate = __lib)]
-pub(super) struct MoveSoulArgs {
+pub(super) struct MoveCardArgs {
     pub client_time_ms: u64,
     pub caller_player_id: u32,
     pub soul_id: u32,
@@ -25,9 +25,9 @@ pub(super) struct MoveSoulArgs {
     pub arrival_ms: u64,
 }
 
-impl From<MoveSoulArgs> for super::Reducer {
-    fn from(args: MoveSoulArgs) -> Self {
-        Self::MoveSoul {
+impl From<MoveCardArgs> for super::Reducer {
+    fn from(args: MoveCardArgs) -> Self {
+        Self::MoveCard {
             client_time_ms: args.client_time_ms,
             caller_player_id: args.caller_player_id,
             soul_id: args.soul_id,
@@ -41,22 +41,22 @@ impl From<MoveSoulArgs> for super::Reducer {
 }
 }
 
-impl __sdk::InModule for MoveSoulArgs {
+impl __sdk::InModule for MoveCardArgs {
     type Module = super::RemoteModule;
 }
 
 #[allow(non_camel_case_types)]
-/// Extension trait for access to the reducer `move_soul`.
+/// Extension trait for access to the reducer `move_card`.
 ///
 /// Implemented for [`super::RemoteReducers`].
-pub trait move_soul {
-    /// Request that the remote module invoke the reducer `move_soul` to run as soon as possible.
+pub trait move_card {
+    /// Request that the remote module invoke the reducer `move_card` to run as soon as possible.
     ///
     /// This method returns immediately, and errors only if we are unable to send the request.
     /// The reducer will run asynchronously in the future,
     ///  and this method provides no way to listen for its completion status.
-    /// /// Use [`move_soul:move_soul_then`] to run a callback after the reducer completes.
-    fn move_soul(&self, client_time_ms: u64,
+    /// /// Use [`move_card:move_card_then`] to run a callback after the reducer completes.
+    fn move_card(&self, client_time_ms: u64,
 caller_player_id: u32,
 soul_id: u32,
 soul_def: u16,
@@ -66,16 +66,16 @@ dest: TilePoint,
 depart_ms: u64,
 arrival_ms: u64,
 ) -> __sdk::Result<()> {
-        self.move_soul_then(client_time_ms, caller_player_id, soul_id, soul_def, from_q, from_r, dest, depart_ms, arrival_ms,  |_, _| {})
+        self.move_card_then(client_time_ms, caller_player_id, soul_id, soul_def, from_q, from_r, dest, depart_ms, arrival_ms,  |_, _| {})
     }
 
-    /// Request that the remote module invoke the reducer `move_soul` to run as soon as possible,
+    /// Request that the remote module invoke the reducer `move_card` to run as soon as possible,
     /// registering `callback` to run when we are notified that the reducer completed.
     ///
     /// This method returns immediately, and errors only if we are unable to send the request.
     /// The reducer will run asynchronously in the future,
     ///  and its status can be observed with the `callback`.
-    fn move_soul_then(
+    fn move_card_then(
         &self,
         client_time_ms: u64,
 caller_player_id: u32,
@@ -93,8 +93,8 @@ arrival_ms: u64,
     ) -> __sdk::Result<()>;
 }
 
-impl move_soul for super::RemoteReducers {
-    fn move_soul_then(
+impl move_card for super::RemoteReducers {
+    fn move_card_then(
         &self,
         client_time_ms: u64,
 caller_player_id: u32,
@@ -110,7 +110,7 @@ arrival_ms: u64,
             + Send
             + 'static,
     ) -> __sdk::Result<()> {
-        self.imp.invoke_reducer_with_callback(MoveSoulArgs { client_time_ms, caller_player_id, soul_id, soul_def, from_q, from_r, dest, depart_ms, arrival_ms,  }, callback)
+        self.imp.invoke_reducer_with_callback(MoveCardArgs { client_time_ms, caller_player_id, soul_id, soul_def, from_q, from_r, dest, depart_ms, arrival_ms,  }, callback)
     }
 }
 

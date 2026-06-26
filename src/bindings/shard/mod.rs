@@ -29,8 +29,8 @@ pub mod apply_action_tile_reducer;
 pub mod claim_pending_reducer;
 pub mod create_card_reducer;
 pub mod ensure_region_reducer;
+pub mod move_card_reducer;
 pub mod move_cards_reducer;
-pub mod move_soul_reducer;
 pub mod place_card_reducer;
 pub mod release_card_shard_reducer;
 pub mod release_pending_reducer;
@@ -65,8 +65,8 @@ pub use apply_action_tile_reducer::apply_action_tile;
 pub use claim_pending_reducer::claim_pending;
 pub use create_card_reducer::create_card;
 pub use ensure_region_reducer::ensure_region;
+pub use move_card_reducer::move_card;
 pub use move_cards_reducer::move_cards;
-pub use move_soul_reducer::move_soul;
 pub use place_card_reducer::place_card;
 pub use release_card_shard_reducer::release_card_shard;
 pub use release_pending_reducer::release_pending;
@@ -96,7 +96,7 @@ pub enum Reducer {
         create_macro_zones: Vec::<u64>,
         create_owners: Vec::<u32>,
         create_distances: Vec::<u16>,
-        create_stocks: Vec::<u32>,
+        create_stocks: Vec::<u64>,
         create_tags: Vec::<u8>,
         create_cells: Vec::<i64>,
         stat_souls: Vec::<u32>,
@@ -104,7 +104,7 @@ pub enum Reducer {
         stat_bytes: Vec::<u8>,
         stat_deltas: Vec::<i8>,
         stock_card_ids: Vec::<u32>,
-        stock_values: Vec::<u32>,
+        stock_values: Vec::<u64>,
         reroot_ids: Vec::<u32>,
         reroot_macro_zones: Vec::<u64>,
         reroot_micro_locations: Vec::<u32>,
@@ -138,7 +138,7 @@ pub enum Reducer {
         owner_id: u32,
         surface: u8,
         packed_definition: u16,
-        stock: u32,
+        stock: u64,
         macro_zone: u64,
         q: u8,
         r: u8,
@@ -149,15 +149,7 @@ pub enum Reducer {
         macro_zone: u64,
         distance: u16,
 }    ,
-    MoveCards {
-        client_time_ms: u64,
-        caller_player_id: u32,
-        card_ids: Vec::<u32>,
-        macro_zones: Vec::<u64>,
-        micro_locations: Vec::<u32>,
-        stack_states: Vec::<u8>,
-}    ,
-    MoveSoul {
+    MoveCard {
         client_time_ms: u64,
         caller_player_id: u32,
         soul_id: u32,
@@ -167,6 +159,14 @@ pub enum Reducer {
         dest: TilePoint,
         depart_ms: u64,
         arrival_ms: u64,
+}    ,
+    MoveCards {
+        client_time_ms: u64,
+        caller_player_id: u32,
+        card_ids: Vec::<u32>,
+        macro_zones: Vec::<u64>,
+        micro_locations: Vec::<u32>,
+        stack_states: Vec::<u8>,
 }    ,
     PlaceCard {
         client_time_ms: u64,
@@ -208,8 +208,8 @@ impl __sdk::Reducer for Reducer {
             Reducer::ClaimPending { .. } => "claim_pending",
             Reducer::CreateCard { .. } => "create_card",
             Reducer::EnsureRegion { .. } => "ensure_region",
+            Reducer::MoveCard { .. } => "move_card",
             Reducer::MoveCards { .. } => "move_cards",
-            Reducer::MoveSoul { .. } => "move_soul",
             Reducer::PlaceCard { .. } => "place_card",
             Reducer::ReleaseCardShard { .. } => "release_card_shard",
             Reducer::ReleasePending { .. } => "release_pending",
@@ -351,6 +351,27 @@ fn args_bsatn(&self) -> Result<Vec<u8>, __sats::bsatn::EncodeError> {
                 macro_zone: macro_zone.clone(),
                 distance: distance.clone(),
 }),
+            Reducer::MoveCard{
+                client_time_ms,
+                caller_player_id,
+                soul_id,
+                soul_def,
+                from_q,
+                from_r,
+                dest,
+                depart_ms,
+                arrival_ms,
+}             => __sats::bsatn::to_vec(&move_card_reducer::MoveCardArgs {
+                client_time_ms: client_time_ms.clone(),
+                caller_player_id: caller_player_id.clone(),
+                soul_id: soul_id.clone(),
+                soul_def: soul_def.clone(),
+                from_q: from_q.clone(),
+                from_r: from_r.clone(),
+                dest: dest.clone(),
+                depart_ms: depart_ms.clone(),
+                arrival_ms: arrival_ms.clone(),
+}),
             Reducer::MoveCards{
                 client_time_ms,
                 caller_player_id,
@@ -365,27 +386,6 @@ fn args_bsatn(&self) -> Result<Vec<u8>, __sats::bsatn::EncodeError> {
                 macro_zones: macro_zones.clone(),
                 micro_locations: micro_locations.clone(),
                 stack_states: stack_states.clone(),
-}),
-            Reducer::MoveSoul{
-                client_time_ms,
-                caller_player_id,
-                soul_id,
-                soul_def,
-                from_q,
-                from_r,
-                dest,
-                depart_ms,
-                arrival_ms,
-}             => __sats::bsatn::to_vec(&move_soul_reducer::MoveSoulArgs {
-                client_time_ms: client_time_ms.clone(),
-                caller_player_id: caller_player_id.clone(),
-                soul_id: soul_id.clone(),
-                soul_def: soul_def.clone(),
-                from_q: from_q.clone(),
-                from_r: from_r.clone(),
-                dest: dest.clone(),
-                depart_ms: depart_ms.clone(),
-                arrival_ms: arrival_ms.clone(),
 }),
             Reducer::PlaceCard{
                 client_time_ms,

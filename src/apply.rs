@@ -201,7 +201,7 @@ pub async fn apply(
     let mut create_surfaces: Vec<u8> = Vec::new();
     let mut create_macro_zones: Vec<u64> = Vec::new();
     let mut create_owners: Vec<u32> = Vec::new();
-    let mut create_stocks: Vec<u32> = Vec::new();
+    let mut create_stocks: Vec<u64> = Vec::new();
     // Per-created-card transient tag (0 = none): set when a sibling create nests
     // in this card, so the shard can register `tag -> minted id`.
     let mut create_tags: Vec<u8> = Vec::new();
@@ -222,7 +222,7 @@ pub async fn apply(
     let mut stat_bytes: Vec<u8> = Vec::new();
     let mut stat_deltas: Vec<i8> = Vec::new();
     let mut stock_card_ids: Vec<u32> = Vec::new();
-    let mut stock_values: Vec<u32> = Vec::new();
+    let mut stock_values: Vec<u64> = Vec::new();
 
     for effect in &plan.effects {
         match effect {
@@ -259,7 +259,7 @@ pub async fn apply(
                 create_surfaces.push(*surface);
                 create_macro_zones.push(*macro_zone);
                 create_owners.push(*owner_id);
-                // The full per-card stock u32 — `@define` defaults with any
+                // The full per-card stock u64 — `@define` defaults with any
                 // same-plan `&handle.aspect.x set` already folded in by the rules
                 // translation, so a created card needs no follow-up SetCardStock.
                 create_stocks.push(*stock);

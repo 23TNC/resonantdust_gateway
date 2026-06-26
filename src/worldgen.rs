@@ -63,7 +63,7 @@ pub fn tiles_for_zone(bundle: &Bundle, macro_zone: u64) -> Vec<u64> {
 
 /// The `cost` aspect of the world tile at hex `(wq, wr)` — biome (from the same
 /// `WORLD_SEED` worldgen) → tile def name → folded `cost`. `None` if no biome
-/// resolves. Used by the gate to price a `move_soul` step authoritatively.
+/// resolves. Used by the gate to price a `move_card` step authoritatively.
 pub fn tile_cost_at(bundle: &Bundle, wq: i32, wr: i32) -> Option<i64> {
     let climate = resonantdust_dsl::noise::climate_floats(wq, wr, WORLD_SEED);
     let name = resonantdust_dsl::worldgen::select_biome(bundle, &climate)?;
