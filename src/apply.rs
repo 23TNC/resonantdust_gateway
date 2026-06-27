@@ -100,18 +100,24 @@ pub async fn apply(
         await_result("claim_pending", dispatch, done_rx).await?;
     }
 
-    // 2. Tile (region DB) — one transaction, when the recipe mutates the
-    //    synthetic tile's stock. Holds-as-stock TODO: in the new model a tile's
-    //    `claim`/`touch` would be runtime tile stock the regions DB doesn't carry
-    //    yet (only the zone-savable slots), so the tile hold mask is `0` for now —
-    //    concurrent-cut exclusion needs the shard to grow a runtime tile-hold
-    //    field. Per-effect timing is also TODO: every effect applies at
-    //    `completion_ms`, ignoring its `at` stamp (acquire@0 vs mutate@window).
+    // Per-effect time: an effect stamped at `sys.time = at` (DSL seconds) fires at
+    // `now_ms + at*1000`. `at = 0` → now (acquire); `at = duration` → completion.
+    let eff_ms = |at: i64| now_ms + (at.max(0) as u64) * 1000;
+
+    // 2. Tile (region DB) — the synthetic tile's GAMEPLAY stock (slots 0/1, the
+    //    zone-savable terrain). A tile's runtime holds (claim/touch, schema slots
+    //    ≥ 2) have no zone storage, so they're dropped here — tile-hold concurrency
+    //    exclusion is a remaining limitation. Applied at completion_ms (the tile's
+    //    gameplay mutation is at the action window; t=0 hold writes were filtered).
+    const TILE_ZONE_SLOTS: u8 = 2;
     let mut stock_slots: Vec<u8> = Vec::new();
     let mut stock_ops: Vec<u8> = Vec::new();
     let mut stock_deltas: Vec<u8> = Vec::new();
     for te in &plan.effects {
         if let Effect::ModifyTileStock { slot, op, delta } = &te.effect {
+            if *slot >= TILE_ZONE_SLOTS {
+                continue; // runtime tile hold — no zone slot, dropped
+            }
             stock_slots.push(*slot);
             stock_ops.push(op.code());
             stock_deltas.push(*delta);
@@ -163,13 +169,11 @@ pub async fn apply(
     // aren't enforced.
     let bound_masks: Vec<u8> = vec![0u8; bound_ids.len()];
 
-    // Effects → parallel arrays. The new model has only Create / SetCardStock /
-    // ModifyTileStock; the destroy/move arrays are kept (empty) for the reducer's
-    // fixed signature. Lifecycle TODO: `destroy` is now `data.dead inc` (a
-    // SetCardStock), so the shard reaper must act on the `dead` stock bit — no
-    // `destroy_card` is emitted here, and the soul-stat DECREMENT a destroy used
-    // to drive is not yet re-derived from a dead-stock write.
-    let destroy_ids: Vec<u32> = Vec::new();
+    // Effects → parallel arrays, each carrying its own fire time (`*_times`).
+    // `data.dead inc` arrives as a `Destroy` (the gate's dead-aspect → flag
+    // translation); holds/gameplay/pstyle are `SetCardStock`; spawns are `Create`.
+    let mut destroy_ids: Vec<u32> = Vec::new();
+    let mut destroy_times: Vec<u64> = Vec::new();
     let mut create_defs: Vec<u16> = Vec::new();
     let mut create_surfaces: Vec<u8> = Vec::new();
     let mut create_macro_zones: Vec<u64> = Vec::new();
@@ -178,6 +182,7 @@ pub async fn apply(
     let mut create_tags: Vec<u8> = Vec::new();
     let mut create_distances: Vec<u16> = Vec::new();
     let mut create_cells: Vec<i64> = Vec::new();
+    let mut create_times: Vec<u64> = Vec::new();
     // `move` is retired (no replacement syscall); kept empty for the signature.
     let move_ids: Vec<u32> = Vec::new();
     let move_surfaces: Vec<u8> = Vec::new();
@@ -190,9 +195,27 @@ pub async fn apply(
     let mut stat_deltas: Vec<i8> = Vec::new();
     let mut stock_card_ids: Vec<u32> = Vec::new();
     let mut stock_values: Vec<u64> = Vec::new();
+    let mut stock_times: Vec<u64> = Vec::new();
 
     for te in &plan.effects {
         match &te.effect {
+            Effect::Destroy { card_id } => {
+                destroy_ids.push(*card_id);
+                destroy_times.push(eff_ms(te.at));
+                // A destroyed stat card decrements its soul's counter.
+                if let Some(card) = snap.cards.get(card_id) {
+                    if let Some((field, byte)) =
+                        pool.content().name_for_packed(card.packed_definition).and_then(stat_slot)
+                    {
+                        if let Some(soul) = owning_soul(snap, card.owner_id) {
+                            stat_souls.push(soul);
+                            stat_fields.push(field);
+                            stat_bytes.push(byte);
+                            stat_deltas.push(-1);
+                        }
+                    }
+                }
+            }
             Effect::Create {
                 def_key,
                 surface,
@@ -216,6 +239,7 @@ pub async fn apply(
                 create_stocks.push(*stock);
                 create_tags.push((*tag).min(u8::MAX as u32) as u8);
                 create_cells.push(micro_location.map(|m| m as i64).unwrap_or(-1));
+                create_times.push(eff_ms(te.at));
                 // A created stat card increments its soul's counter.
                 if let Some((field, byte)) = stat_slot(def_key) {
                     if let Some(soul) = owning_soul(snap, *owner_id) {
@@ -228,11 +252,12 @@ pub async fn apply(
             }
             Effect::ModifyTileStock { .. } => { /* applied on the region DB above */ }
             Effect::SetCardStock { card_id, stock } => {
-                // Gate-computed absolute new stock for the card (holds, dead,
-                // gameplay aspects). TODO: written at completion_ms, ignoring the
-                // effect's `at` stamp.
+                // Gate-computed absolute new stock for the card (holds claim/touch,
+                // gameplay aspects, pstyle), future-stamped at the effect's time —
+                // so an acquire (t=0) and its release (t=window) land separately.
                 stock_card_ids.push(*card_id);
                 stock_values.push(*stock);
+                stock_times.push(eff_ms(te.at));
             }
         }
     }
@@ -285,6 +310,7 @@ pub async fn apply(
         bound_ids,
         bound_masks,
         destroy_ids,
+        destroy_times,
         create_defs,
         create_surfaces,
         create_macro_zones,
@@ -293,12 +319,14 @@ pub async fn apply(
         create_stocks,
         create_tags,
         create_cells,
+        create_times,
         stat_souls,
         stat_fields,
         stat_bytes,
         stat_deltas,
         stock_card_ids,
         stock_values,
+        stock_times,
         reroot_ids,
         reroot_macro_zones,
         reroot_micro_locations,
