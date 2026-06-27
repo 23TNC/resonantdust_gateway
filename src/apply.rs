@@ -21,18 +21,12 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use resonantdust_codec::packed::micro_loose_cell;
-use resonantdust_codec::plan::{ActionPlan, Effect, HoldKinds};
+use resonantdust_codec::plan::{ActionPlan, Effect};
 
 use crate::connections::Pool;
 use crate::gather::{Proposal, Snapshot};
 
 /// Single `cards` shard today (owner-sharding is future work).
-
-// Hold-kind bit positions — must match `shard::gate_api::hold_kind`.
-const K_TOUCH: u8 = 0;
-const K_SLOT_HOLD: u8 = 1;
-const K_SLOT_SHARE: u8 = 2;
-const K_POSITION_HOLD: u8 = 3;
 
 /// `soul` card_type nibble (content/cards/types.json). The owning-soul walk
 /// stops at the first owner of this type.
@@ -74,38 +68,6 @@ fn owning_soul(snap: &Snapshot, card_id: u32) -> Option<u32> {
     None
 }
 
-/// Per-card hold bitmask for a HELD bound card: `touch` (always — a held card is
-/// kept alive) plus the verb's fields. Bit `i` = hold-kind `i`.
-fn hold_mask(kinds: &HoldKinds) -> u8 {
-    let mut m = 1u8 << K_TOUCH;
-    if kinds.slot_hold {
-        m |= 1 << K_SLOT_HOLD;
-    }
-    if kinds.slot_share {
-        m |= 1 << K_SLOT_SHARE;
-    }
-    if kinds.position_hold {
-        m |= 1 << K_POSITION_HOLD;
-    }
-    m
-}
-
-/// Tile hold bitmask — like [`hold_mask`] but WITHOUT `touch` (tiles were never
-/// touch-held; matches the retired `tile_lease`).
-fn tile_hold_mask(kinds: &HoldKinds) -> u8 {
-    let mut m = 0u8;
-    if kinds.slot_hold {
-        m |= 1 << K_SLOT_HOLD;
-    }
-    if kinds.slot_share {
-        m |= 1 << K_SLOT_SHARE;
-    }
-    if kinds.position_hold {
-        m |= 1 << K_POSITION_HOLD;
-    }
-    m
-}
-
 /// Materialize `plan` for `proposal`. `now_ms` stamps the hold acquires (which
 /// lock the bound cards / tile in place for the action's life); the releases,
 /// per-card finalize, and completion effects are future-stamped at
@@ -138,20 +100,25 @@ pub async fn apply(
         await_result("claim_pending", dispatch, done_rx).await?;
     }
 
-    // 2. Tile (region DB) — one transaction, when the recipe targets the
-    //    synthetic tile. First, so the exclusive-cut guard fails fast.
-    if let Some(kinds) = &plan.tile_holds {
-        let (q, r) = micro_loose_cell(proposal.micro_location);
-        let mut stock_slots: Vec<u8> = Vec::new();
-        let mut stock_ops: Vec<u8> = Vec::new();
-        let mut stock_deltas: Vec<u8> = Vec::new();
-        for effect in &plan.effects {
-            if let Effect::ModifyTileStock { slot, op, delta } = effect {
-                stock_slots.push(*slot);
-                stock_ops.push(op.code());
-                stock_deltas.push(*delta);
-            }
+    // 2. Tile (region DB) — one transaction, when the recipe mutates the
+    //    synthetic tile's stock. Holds-as-stock TODO: in the new model a tile's
+    //    `claim`/`touch` would be runtime tile stock the regions DB doesn't carry
+    //    yet (only the zone-savable slots), so the tile hold mask is `0` for now —
+    //    concurrent-cut exclusion needs the shard to grow a runtime tile-hold
+    //    field. Per-effect timing is also TODO: every effect applies at
+    //    `completion_ms`, ignoring its `at` stamp (acquire@0 vs mutate@window).
+    let mut stock_slots: Vec<u8> = Vec::new();
+    let mut stock_ops: Vec<u8> = Vec::new();
+    let mut stock_deltas: Vec<u8> = Vec::new();
+    for te in &plan.effects {
+        if let Effect::ModifyTileStock { slot, op, delta } = &te.effect {
+            stock_slots.push(*slot);
+            stock_ops.push(op.code());
+            stock_deltas.push(*delta);
         }
+    }
+    if !stock_slots.is_empty() {
+        let (q, r) = micro_loose_cell(proposal.micro_location);
         let regions_conn =
             regions.ok_or_else(|| "apply: regions upstream not connected".to_string())?;
         let (done_tx, done_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
@@ -162,7 +129,7 @@ pub async fn apply(
             proposal.macro_zone,
             q,
             r,
-            tile_hold_mask(kinds),
+            0, // tile hold mask — TODO: runtime tile holds (see above)
             stock_slots,
             stock_ops,
             stock_deltas,
@@ -188,34 +155,34 @@ pub async fn apply(
         }
     }
     let bound_ids: Vec<u32> = bound.iter().copied().collect();
-    let bound_masks: Vec<u8> = bound_ids
-        .iter()
-        .map(|id| plan.holds.get(id).map(hold_mask).unwrap_or(0))
-        .collect();
+    // Holds-as-stock: bound cards no longer carry a gate-computed hold mask — the
+    // recipe writes `data.claim`/`touch`/… via SetCardStock effects. So every
+    // bound card's mask is `0` (finalize-only). TODO: the shard still needs the
+    // claim/touch STOCK writes to keep a card alive for the action's window and to
+    // gate concurrent claims; until the reducer reads those bits, in-flight holds
+    // aren't enforced.
+    let bound_masks: Vec<u8> = vec![0u8; bound_ids.len()];
 
-    // Effects → parallel arrays. Soul-stat deltas are gate-resolved here from the
-    // snapshot + content (the gate owns the stat-card → soul mapping), then
-    // applied inside the reducer.
-    let mut destroy_ids: Vec<u32> = Vec::new();
+    // Effects → parallel arrays. The new model has only Create / SetCardStock /
+    // ModifyTileStock; the destroy/move arrays are kept (empty) for the reducer's
+    // fixed signature. Lifecycle TODO: `destroy` is now `data.dead inc` (a
+    // SetCardStock), so the shard reaper must act on the `dead` stock bit — no
+    // `destroy_card` is emitted here, and the soul-stat DECREMENT a destroy used
+    // to drive is not yet re-derived from a dead-stock write.
+    let destroy_ids: Vec<u32> = Vec::new();
     let mut create_defs: Vec<u16> = Vec::new();
     let mut create_surfaces: Vec<u8> = Vec::new();
     let mut create_macro_zones: Vec<u64> = Vec::new();
     let mut create_owners: Vec<u32> = Vec::new();
     let mut create_stocks: Vec<u64> = Vec::new();
-    // Per-created-card transient tag (0 = none): set when a sibling create nests
-    // in this card, so the shard can register `tag -> minted id`.
     let mut create_tags: Vec<u8> = Vec::new();
-    // Per-product container disk radius, so a recipe output lands in a cell that
-    // EXISTS in its target region disk (mirrors create_card's `distance`).
     let mut create_distances: Vec<u16> = Vec::new();
-    // Per-product exact cell, or `-1` for "first free cell" (the inventory path).
-    // A `create … .location` product pins its cell (a bound card's world spot).
     let mut create_cells: Vec<i64> = Vec::new();
-    // `move` effects → relocate an existing card to a zone, placed first-free.
-    let mut move_ids: Vec<u32> = Vec::new();
-    let mut move_surfaces: Vec<u8> = Vec::new();
-    let mut move_macro_zones: Vec<u64> = Vec::new();
-    let mut move_owners: Vec<u32> = Vec::new();
+    // `move` is retired (no replacement syscall); kept empty for the signature.
+    let move_ids: Vec<u32> = Vec::new();
+    let move_surfaces: Vec<u8> = Vec::new();
+    let move_macro_zones: Vec<u64> = Vec::new();
+    let move_owners: Vec<u32> = Vec::new();
     let mut move_distances: Vec<u16> = Vec::new();
     let mut stat_souls: Vec<u32> = Vec::new();
     let mut stat_fields: Vec<u8> = Vec::new();
@@ -224,24 +191,8 @@ pub async fn apply(
     let mut stock_card_ids: Vec<u32> = Vec::new();
     let mut stock_values: Vec<u64> = Vec::new();
 
-    for effect in &plan.effects {
-        match effect {
-            Effect::Destroy { card_id } => {
-                destroy_ids.push(*card_id);
-                // A destroyed stat card decrements its soul's counter.
-                if let Some(card) = snap.cards.get(card_id) {
-                    if let Some((field, byte)) =
-                        pool.content().name_for_packed(card.packed_definition).and_then(stat_slot)
-                    {
-                        if let Some(soul) = owning_soul(snap, card.owner_id) {
-                            stat_souls.push(soul);
-                            stat_fields.push(field);
-                            stat_bytes.push(byte);
-                            stat_deltas.push(-1);
-                        }
-                    }
-                }
-            }
+    for te in &plan.effects {
+        match &te.effect {
             Effect::Create {
                 def_key,
                 surface,
@@ -260,7 +211,7 @@ pub async fn apply(
                 create_macro_zones.push(*macro_zone);
                 create_owners.push(*owner_id);
                 // The full per-card stock u64 — `@define` defaults with any
-                // same-plan `&handle.aspect.x set` already folded in by the rules
+                // same-plan `&h.data.x set` already folded in by the rules
                 // translation, so a created card needs no follow-up SetCardStock.
                 create_stocks.push(*stock);
                 create_tags.push((*tag).min(u8::MAX as u32) as u8);
@@ -275,26 +226,11 @@ pub async fn apply(
                     }
                 }
             }
-            Effect::Move {
-                card_id,
-                surface,
-                macro_zone,
-                owner_id,
-            } => {
-                move_ids.push(*card_id);
-                move_surfaces.push(*surface);
-                move_macro_zones.push(*macro_zone);
-                move_owners.push(*owner_id);
-            }
-            Effect::CreateDeferred { .. } => {
-                return Err(
-                    "apply: CreateDeferred (stack.N.create) not yet supported in gateway v1"
-                        .to_string(),
-                );
-            }
             Effect::ModifyTileStock { .. } => { /* applied on the region DB above */ }
             Effect::SetCardStock { card_id, stock } => {
-                // Gate-computed absolute new stock for the card (write @completion).
+                // Gate-computed absolute new stock for the card (holds, dead,
+                // gameplay aspects). TODO: written at completion_ms, ignoring the
+                // effect's `at` stamp.
                 stock_card_ids.push(*card_id);
                 stock_values.push(*stock);
             }
