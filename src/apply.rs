@@ -196,6 +196,9 @@ pub async fn apply(
     let mut stock_card_ids: Vec<u32> = Vec::new();
     let mut stock_values: Vec<u64> = Vec::new();
     let mut stock_times: Vec<u64> = Vec::new();
+    // Op-log deltas for GLOBAL aspects (holds / dead / reap), packed one struct
+    // per op (the reducer arg-count ceiling rules out 5 parallel scalar arrays).
+    let mut logops: Vec<crate::bindings::shard::LogOpArg> = Vec::new();
 
     for te in &plan.effects {
         match &te.effect {
@@ -252,12 +255,37 @@ pub async fn apply(
             }
             Effect::ModifyTileStock { .. } => { /* applied on the region DB above */ }
             Effect::SetCardStock { card_id, stock } => {
-                // Gate-computed absolute new stock for the card (holds claim/touch,
-                // gameplay aspects, pstyle), future-stamped at the effect's time —
-                // so an acquire (t=0) and its release (t=window) land separately.
+                // Gate-computed absolute new stock for a PER-DEF aspect (gameplay
+                // wood/pine, pstyle), future-stamped at the effect's time.
                 stock_card_ids.push(*card_id);
                 stock_values.push(*stock);
                 stock_times.push(eff_ms(te.at));
+            }
+            Effect::LogOp { card_id, aspect_id, op, modifier } => {
+                // Global aspect (holds / dead / reap) op-log delta, future-stamped.
+                logops.push(crate::bindings::shard::LogOpArg {
+                    card_id: *card_id,
+                    aspect_id: *aspect_id,
+                    op: *op,
+                    modifier: *modifier,
+                    time_ms: eff_ms(te.at),
+                });
+                // A card marked dead (Dead inc) decrements its soul's stat counter
+                // — the side-effect the old Destroy path carried.
+                if *aspect_id == resonantdust_codec::aspects::StockAspect::Dead.id() && *modifier > 0 {
+                    if let Some(card) = snap.cards.get(card_id) {
+                        if let Some((field, byte)) =
+                            pool.content().name_for_packed(card.packed_definition).and_then(stat_slot)
+                        {
+                            if let Some(soul) = owning_soul(snap, card.owner_id) {
+                                stat_souls.push(soul);
+                                stat_fields.push(field);
+                                stat_bytes.push(byte);
+                                stat_deltas.push(-1);
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -336,6 +364,7 @@ pub async fn apply(
         move_macro_zones,
         move_owners,
         move_distances,
+        logops,
         move |_ctx, res| {
             let _ = done_tx.send(res.unwrap_or_else(|e| Err(format!("internal: {e}"))));
         },

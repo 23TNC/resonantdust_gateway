@@ -15,6 +15,7 @@ pub mod card_type;
 pub mod card_id_counter_type;
 pub mod card_shard_type;
 pub mod gc_schedule_type;
+pub mod log_op_arg_type;
 pub mod op_log_type;
 pub mod pending_action_type;
 pub mod placement_type;
@@ -47,6 +48,7 @@ pub use card_type::Card;
 pub use card_id_counter_type::CardIdCounter;
 pub use card_shard_type::CardShard;
 pub use gc_schedule_type::GcSchedule;
+pub use log_op_arg_type::LogOpArg;
 pub use op_log_type::OpLog;
 pub use pending_action_type::PendingAction;
 pub use placement_type::Placement;
@@ -119,6 +121,7 @@ pub enum Reducer {
         move_macro_zones: Vec::<u64>,
         move_owners: Vec::<u32>,
         move_distances: Vec::<u16>,
+        logops: Vec::<LogOpArg>,
 }    ,
     ApplyActionTile {
         now_ms: u64,
@@ -265,6 +268,7 @@ fn args_bsatn(&self) -> Result<Vec<u8>, __sats::bsatn::EncodeError> {
                 move_macro_zones,
                 move_owners,
                 move_distances,
+                logops,
 }             => __sats::bsatn::to_vec(&apply_action_reducer::ApplyActionArgs {
                 now_ms: now_ms.clone(),
                 completion_ms: completion_ms.clone(),
@@ -297,6 +301,7 @@ fn args_bsatn(&self) -> Result<Vec<u8>, __sats::bsatn::EncodeError> {
                 move_macro_zones: move_macro_zones.clone(),
                 move_owners: move_owners.clone(),
                 move_distances: move_distances.clone(),
+                logops: logops.clone(),
 }),
             Reducer::ApplyActionTile{
                 now_ms,
