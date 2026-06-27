@@ -167,13 +167,9 @@ pub async fn apply(
     // claim/touch STOCK writes to keep a card alive for the action's window and to
     // gate concurrent claims; until the reducer reads those bits, in-flight holds
     // aren't enforced.
-    let bound_masks: Vec<u8> = vec![0u8; bound_ids.len()];
 
-    // Effects → parallel arrays, each carrying its own fire time (`*_times`).
-    // `data.dead inc` arrives as a `Destroy` (the gate's dead-aspect → flag
-    // translation); holds/gameplay/pstyle are `SetCardStock`; spawns are `Create`.
-    let mut destroy_ids: Vec<u32> = Vec::new();
-    let mut destroy_times: Vec<u64> = Vec::new();
+    // Effects → parallel arrays. Global aspects (holds / dead / reap) are `LogOp`s
+    // (op-log); per-def gameplay/pstyle are `SetCardStock`; spawns are `Create`.
     let mut create_defs: Vec<u16> = Vec::new();
     let mut create_surfaces: Vec<u8> = Vec::new();
     let mut create_macro_zones: Vec<u64> = Vec::new();
@@ -202,23 +198,6 @@ pub async fn apply(
 
     for te in &plan.effects {
         match &te.effect {
-            Effect::Destroy { card_id } => {
-                destroy_ids.push(*card_id);
-                destroy_times.push(eff_ms(te.at));
-                // A destroyed stat card decrements its soul's counter.
-                if let Some(card) = snap.cards.get(card_id) {
-                    if let Some((field, byte)) =
-                        pool.content().name_for_packed(card.packed_definition).and_then(stat_slot)
-                    {
-                        if let Some(soul) = owning_soul(snap, card.owner_id) {
-                            stat_souls.push(soul);
-                            stat_fields.push(field);
-                            stat_bytes.push(byte);
-                            stat_deltas.push(-1);
-                        }
-                    }
-                }
-            }
             Effect::Create {
                 def_key,
                 surface,
@@ -300,7 +279,14 @@ pub async fn apply(
     let mut reroot_macro_zones: Vec<u64> = Vec::new();
     let mut reroot_micro_locations: Vec<u32> = Vec::new();
     let mut reroot_stack_states: Vec<u8> = Vec::new();
-    for w in resonantdust_state::stack::plan_splice(snap, &destroy_ids, now_ms) {
+    // Cards being killed this action drive the splice (re-root a destroyed root's
+    // members) — derive them from the `Dead` LogOps (was the old `destroy_ids`).
+    let dead_ids: Vec<u32> = logops
+        .iter()
+        .filter(|l| l.aspect_id == resonantdust_codec::aspects::StockAspect::Dead.id() && l.modifier > 0)
+        .map(|l| l.card_id)
+        .collect();
+    for w in resonantdust_state::stack::plan_splice(snap, &dead_ids, now_ms) {
         let (micro_location, flags) = w.micro.apply(0);
         reroot_ids.push(w.card_id);
         reroot_macro_zones.push(w.macro_zone);
@@ -333,12 +319,8 @@ pub async fn apply(
 
     let (done_tx, done_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
     let dispatch = cards_conn.reducers.apply_action_then(
-        now_ms,
         completion_ms,
         bound_ids,
-        bound_masks,
-        destroy_ids,
-        destroy_times,
         create_defs,
         create_surfaces,
         create_macro_zones,

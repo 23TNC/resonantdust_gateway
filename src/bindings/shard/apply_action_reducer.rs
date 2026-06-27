@@ -14,12 +14,8 @@ use super::log_op_arg_type::LogOpArg;
 #[derive(__lib::ser::Serialize, __lib::de::Deserialize, Clone, PartialEq, Debug)]
 #[sats(crate = __lib)]
 pub(super) struct ApplyActionArgs {
-    pub now_ms: u64,
     pub completion_ms: u64,
     pub bound_ids: Vec::<u32>,
-    pub bound_masks: Vec::<u8>,
-    pub destroy_ids: Vec::<u32>,
-    pub destroy_times: Vec::<u64>,
     pub create_defs: Vec::<u16>,
     pub create_surfaces: Vec::<u8>,
     pub create_macro_zones: Vec::<u64>,
@@ -51,12 +47,8 @@ pub(super) struct ApplyActionArgs {
 impl From<ApplyActionArgs> for super::Reducer {
     fn from(args: ApplyActionArgs) -> Self {
         Self::ApplyAction {
-            now_ms: args.now_ms,
             completion_ms: args.completion_ms,
             bound_ids: args.bound_ids,
-            bound_masks: args.bound_masks,
-            destroy_ids: args.destroy_ids,
-            destroy_times: args.destroy_times,
             create_defs: args.create_defs,
             create_surfaces: args.create_surfaces,
             create_macro_zones: args.create_macro_zones,
@@ -102,12 +94,8 @@ pub trait apply_action {
     /// The reducer will run asynchronously in the future,
     ///  and this method provides no way to listen for its completion status.
     /// /// Use [`apply_action:apply_action_then`] to run a callback after the reducer completes.
-    fn apply_action(&self, now_ms: u64,
-completion_ms: u64,
+    fn apply_action(&self, completion_ms: u64,
 bound_ids: Vec::<u32>,
-bound_masks: Vec::<u8>,
-destroy_ids: Vec::<u32>,
-destroy_times: Vec::<u64>,
 create_defs: Vec::<u16>,
 create_surfaces: Vec::<u8>,
 create_macro_zones: Vec::<u64>,
@@ -135,7 +123,7 @@ move_owners: Vec::<u32>,
 move_distances: Vec::<u16>,
 logops: Vec::<LogOpArg>,
 ) -> __sdk::Result<()> {
-        self.apply_action_then(now_ms, completion_ms, bound_ids, bound_masks, destroy_ids, destroy_times, create_defs, create_surfaces, create_macro_zones, create_owners, create_distances, create_stocks, create_tags, create_cells, create_times, stat_souls, stat_fields, stat_bytes, stat_deltas, stock_card_ids, stock_values, stock_times, reroot_ids, reroot_macro_zones, reroot_micro_locations, reroot_stack_states, move_ids, move_surfaces, move_macro_zones, move_owners, move_distances, logops,  |_, _| {})
+        self.apply_action_then(completion_ms, bound_ids, create_defs, create_surfaces, create_macro_zones, create_owners, create_distances, create_stocks, create_tags, create_cells, create_times, stat_souls, stat_fields, stat_bytes, stat_deltas, stock_card_ids, stock_values, stock_times, reroot_ids, reroot_macro_zones, reroot_micro_locations, reroot_stack_states, move_ids, move_surfaces, move_macro_zones, move_owners, move_distances, logops,  |_, _| {})
     }
 
     /// Request that the remote module invoke the reducer `apply_action` to run as soon as possible,
@@ -146,12 +134,8 @@ logops: Vec::<LogOpArg>,
     ///  and its status can be observed with the `callback`.
     fn apply_action_then(
         &self,
-        now_ms: u64,
-completion_ms: u64,
+        completion_ms: u64,
 bound_ids: Vec::<u32>,
-bound_masks: Vec::<u8>,
-destroy_ids: Vec::<u32>,
-destroy_times: Vec::<u64>,
 create_defs: Vec::<u16>,
 create_surfaces: Vec::<u8>,
 create_macro_zones: Vec::<u64>,
@@ -188,12 +172,8 @@ logops: Vec::<LogOpArg>,
 impl apply_action for super::RemoteReducers {
     fn apply_action_then(
         &self,
-        now_ms: u64,
-completion_ms: u64,
+        completion_ms: u64,
 bound_ids: Vec::<u32>,
-bound_masks: Vec::<u8>,
-destroy_ids: Vec::<u32>,
-destroy_times: Vec::<u64>,
 create_defs: Vec::<u16>,
 create_surfaces: Vec::<u8>,
 create_macro_zones: Vec::<u64>,
@@ -225,7 +205,7 @@ logops: Vec::<LogOpArg>,
             + Send
             + 'static,
     ) -> __sdk::Result<()> {
-        self.imp.invoke_reducer_with_callback(ApplyActionArgs { now_ms, completion_ms, bound_ids, bound_masks, destroy_ids, destroy_times, create_defs, create_surfaces, create_macro_zones, create_owners, create_distances, create_stocks, create_tags, create_cells, create_times, stat_souls, stat_fields, stat_bytes, stat_deltas, stock_card_ids, stock_values, stock_times, reroot_ids, reroot_macro_zones, reroot_micro_locations, reroot_stack_states, move_ids, move_surfaces, move_macro_zones, move_owners, move_distances, logops,  }, callback)
+        self.imp.invoke_reducer_with_callback(ApplyActionArgs { completion_ms, bound_ids, create_defs, create_surfaces, create_macro_zones, create_owners, create_distances, create_stocks, create_tags, create_cells, create_times, stat_souls, stat_fields, stat_bytes, stat_deltas, stock_card_ids, stock_values, stock_times, reroot_ids, reroot_macro_zones, reroot_micro_locations, reroot_stack_states, move_ids, move_surfaces, move_macro_zones, move_owners, move_distances, logops,  }, callback)
     }
 }
 
