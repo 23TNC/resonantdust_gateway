@@ -113,17 +113,32 @@ pub async fn apply(
     let mut stock_slots: Vec<u8> = Vec::new();
     let mut stock_ops: Vec<u8> = Vec::new();
     let mut stock_deltas: Vec<u8> = Vec::new();
+    // The tile's op-log holds (claim/touch via set_use) — applied on the tile-card
+    // the shard promotes (card_id resolved there, so 0 here).
+    let mut tile_logops: Vec<crate::bindings::shard::LogOpArg> = Vec::new();
     for te in &plan.effects {
-        if let Effect::ModifyTileStock { slot, op, delta } = &te.effect {
-            if *slot >= TILE_ZONE_SLOTS {
-                continue; // runtime tile hold — no zone slot, dropped
+        match &te.effect {
+            Effect::ModifyTileStock { slot, op, delta } => {
+                if *slot >= TILE_ZONE_SLOTS {
+                    continue; // runtime tile hold — no zone slot, dropped
+                }
+                stock_slots.push(*slot);
+                stock_ops.push(op.code());
+                stock_deltas.push(*delta);
             }
-            stock_slots.push(*slot);
-            stock_ops.push(op.code());
-            stock_deltas.push(*delta);
+            Effect::TileLogOp { aspect_id, op, modifier } => {
+                tile_logops.push(crate::bindings::shard::LogOpArg {
+                    card_id: 0,
+                    aspect_id: *aspect_id,
+                    op: *op,
+                    modifier: *modifier,
+                    time_ms: eff_ms(te.at),
+                });
+            }
+            _ => {}
         }
     }
-    if !stock_slots.is_empty() {
+    if !stock_slots.is_empty() || !tile_logops.is_empty() {
         let (q, r) = micro_loose_cell(proposal.micro_location);
         let regions_conn =
             regions.ok_or_else(|| "apply: regions upstream not connected".to_string())?;
@@ -135,7 +150,7 @@ pub async fn apply(
             proposal.macro_zone,
             q,
             r,
-            0, // tile hold mask — TODO: runtime tile holds (see above)
+            tile_logops,
             stock_slots,
             stock_ops,
             stock_deltas,
@@ -233,6 +248,7 @@ pub async fn apply(
                 }
             }
             Effect::ModifyTileStock { .. } => { /* applied on the region DB above */ }
+            Effect::TileLogOp { .. } => { /* applied on the region DB (tile holds) above */ }
             Effect::SetCardStock { card_id, stock } => {
                 // Gate-computed absolute new stock for a PER-DEF aspect (gameplay
                 // wood/pine, pstyle), future-stamped at the effect's time.

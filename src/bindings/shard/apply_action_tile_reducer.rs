@@ -9,6 +9,7 @@ use spacetimedb_sdk::__codegen::{
 	__ws,
 };
 
+use super::log_op_arg_type::LogOpArg;
 
 #[derive(__lib::ser::Serialize, __lib::de::Deserialize, Clone, PartialEq, Debug)]
 #[sats(crate = __lib)]
@@ -19,7 +20,7 @@ pub(super) struct ApplyActionTileArgs {
     pub macro_zone: u64,
     pub q: u8,
     pub r: u8,
-    pub hold_mask: u8,
+    pub logops: Vec::<LogOpArg>,
     pub stock_slots: Vec::<u8>,
     pub stock_ops: Vec::<u8>,
     pub stock_deltas: Vec::<u8>,
@@ -34,7 +35,7 @@ impl From<ApplyActionTileArgs> for super::Reducer {
             macro_zone: args.macro_zone,
             q: args.q,
             r: args.r,
-            hold_mask: args.hold_mask,
+            logops: args.logops,
             stock_slots: args.stock_slots,
             stock_ops: args.stock_ops,
             stock_deltas: args.stock_deltas,
@@ -63,12 +64,12 @@ surface: u8,
 macro_zone: u64,
 q: u8,
 r: u8,
-hold_mask: u8,
+logops: Vec::<LogOpArg>,
 stock_slots: Vec::<u8>,
 stock_ops: Vec::<u8>,
 stock_deltas: Vec::<u8>,
 ) -> __sdk::Result<()> {
-        self.apply_action_tile_then(now_ms, completion_ms, surface, macro_zone, q, r, hold_mask, stock_slots, stock_ops, stock_deltas,  |_, _| {})
+        self.apply_action_tile_then(now_ms, completion_ms, surface, macro_zone, q, r, logops, stock_slots, stock_ops, stock_deltas,  |_, _| {})
     }
 
     /// Request that the remote module invoke the reducer `apply_action_tile` to run as soon as possible,
@@ -85,7 +86,7 @@ surface: u8,
 macro_zone: u64,
 q: u8,
 r: u8,
-hold_mask: u8,
+logops: Vec::<LogOpArg>,
 stock_slots: Vec::<u8>,
 stock_ops: Vec::<u8>,
 stock_deltas: Vec::<u8>,
@@ -105,7 +106,7 @@ surface: u8,
 macro_zone: u64,
 q: u8,
 r: u8,
-hold_mask: u8,
+logops: Vec::<LogOpArg>,
 stock_slots: Vec::<u8>,
 stock_ops: Vec::<u8>,
 stock_deltas: Vec::<u8>,
@@ -114,7 +115,7 @@ stock_deltas: Vec::<u8>,
             + Send
             + 'static,
     ) -> __sdk::Result<()> {
-        self.imp.invoke_reducer_with_callback(ApplyActionTileArgs { now_ms, completion_ms, surface, macro_zone, q, r, hold_mask, stock_slots, stock_ops, stock_deltas,  }, callback)
+        self.imp.invoke_reducer_with_callback(ApplyActionTileArgs { now_ms, completion_ms, surface, macro_zone, q, r, logops, stock_slots, stock_ops, stock_deltas,  }, callback)
     }
 }
 
