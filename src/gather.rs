@@ -21,12 +21,8 @@ use std::time::Duration;
 
 use resonantdust_codec::card_model;
 use resonantdust_codec::packed::{
-    micro_loose_cell, pack_definition, tile_full, unpack_definition, unpack_zone_definition,
-    valid_at_time,
+    micro_loose_cell, unpack_definition, unpack_zone_definition, valid_at_time, TILE_CARD_TYPE,
 };
-
-/// `card_type` of a promoted tile-card. Mirrors `regions::cards::TILE_CARD_TYPE`.
-const TILE_CARD_TYPE: u8 = 7;
 use spacetimedb_sdk::{DbContext, SubscriptionHandle as _, Table};
 use tracing::debug;
 
@@ -341,30 +337,28 @@ fn latest_tile_card_at(
 /// (no zone / out of range / empty cell) — recipes that don't reference a tile
 /// pass `None` harmlessly.
 pub fn synthetic_tile(snap: &Snapshot, micro_location: u32) -> Option<(u16, (u8, u8))> {
-    if let Some(card) = &snap.tile_card {
-        return Some((
-            card.packed_definition,
-            (
-                card_model::stock(card.stock, 0),
-                card_model::stock(card.stock, 1),
-            ),
-        ));
-    }
-    let zone = snap.zone.as_ref()?;
     let (q, r) = micro_loose_cell(micro_location);
-    if q >= 7 || r >= 7 {
-        return None;
-    }
-    let tiles = [
+    // The promoted tile-card's live view (decremented stock / in-flight holds), if any.
+    let tile_card = snap.tile_card.as_ref().map(|c| {
+        (c.packed_definition, card_model::stock(c.stock, 0), card_model::stock(c.stock, 1))
+    });
+    // The card-priority rule (codec) folds the tile-card over the zone slot. With no
+    // zone gathered, only a tile-card can answer.
+    let Some(zone) = snap.zone.as_ref() else {
+        return tile_card.map(|(d, s0, s1)| (d, (s0, s1)));
+    };
+    let words = [
         zone.t_0, zone.t_1, zone.t_2, zone.t_3, zone.t_4, zone.t_5, zone.t_6, zone.t_7, zone.t_8,
         zone.t_9, zone.t_10, zone.t_11, zone.t_12,
     ];
-    let (def_id, stock0, stock1) = tile_full(&tiles, resonantdust_codec::packed::tile_slot(q, r));
-    if def_id == 0 {
-        return None;
-    }
-    let packed_def = pack_definition(unpack_zone_definition(zone.packed_definition), def_id);
-    Some((packed_def, (stock0, stock1)))
+    resonantdust_codec::packed::synthetic_tile(
+        tile_card,
+        &words,
+        unpack_zone_definition(zone.packed_definition),
+        q,
+        r,
+    )
+    .map(|(d, s0, s1)| (d, (s0, s1)))
 }
 
 // --- latest-version readers (collapse the cache's history to current) ---

@@ -20,7 +20,7 @@
 //! A per-key in-flight lock collapses the burst (the login preview prewarm asks
 //! for every stem at once): concurrent misses for the same LOD generate once.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -104,6 +104,13 @@ pub async fn ensure(pool: &Pool, rest: &str) -> Result<Vec<u8>, LodError> {
     let lod_key = format!("textures/lod/{rest}");
     let master_key = format!("textures/master/{object_dir}/{file}");
 
+    // Negative cache: a master we've already proven absent can't generate a LOD,
+    // and (masters + their LODs are deleted together) no stale LOD can exist for
+    // it — so 404 now, no R2 round-trip. Re-admitted on the next version bump.
+    if master_is_absent(&master_key) {
+        return Err(LodError::new(StatusCode::NOT_FOUND, format!("no master at {master_key} (cached absent)")));
+    }
+
     // Fast path: the versioned object exists → serve without taking the lock.
     if let Some(bytes) = store
         .get_bytes(&lod_key)
@@ -127,11 +134,17 @@ pub async fn ensure(pool: &Pool, rest: &str) -> Result<Vec<u8>, LodError> {
         return Ok(bytes);
     }
 
-    let master = store
+    let master = match store
         .get_bytes(&master_key)
         .await
         .map_err(|e| LodError::new(StatusCode::BAD_GATEWAY, e))?
-        .ok_or_else(|| LodError::new(StatusCode::NOT_FOUND, format!("no master at {master_key}")))?;
+    {
+        Some(bytes) => bytes,
+        None => {
+            mark_master_absent(&master_key); // remember so siblings/sizes skip the GET
+            return Err(LodError::new(StatusCode::NOT_FOUND, format!("no master at {master_key}")));
+        }
+    };
 
     let out = downscale(&master, size)
         .map_err(|e| LodError::new(StatusCode::UNPROCESSABLE_ENTITY, e))?;
@@ -172,6 +185,46 @@ fn downscale(master_png: &[u8], size: u32) -> Result<Vec<u8>, String> {
     out.write_to(&mut Cursor::new(&mut buf), image::ImageFormat::Png)
         .map_err(|e| format!("encode lod: {e}"))?;
     Ok(buf)
+}
+
+/// Process-wide negative cache of master keys known absent in R2. A master that
+/// doesn't exist can't be downscaled, so once `ensure` has seen a 404 for one,
+/// every later request for it short-circuits to `NOT_FOUND` WITHOUT another R2
+/// round-trip — a stale manifest (or a client that hasn't learned yet) costs one
+/// R2 GET total, not one per size/channel/variation. Shared by the LOD + geo
+/// paths (both derive the same version-less `textures/master/…` key).
+///
+/// We cache only ABSENCE: a present master is re-GET on every generation anyway
+/// (its bytes are the downscale input), and once a LOD is generated the R2
+/// fast-path serves it without reaching the master fetch — so a "present" entry
+/// would never save a round-trip. Purely in-memory: a restart re-probes
+/// (self-healing), and a freshly-uploaded master is re-admitted by
+/// [`flush_absent_masters`], called when the corpus version bumps — the same poll
+/// that learns about the upload (see `Pool::apply_content`).
+fn absent_masters() -> &'static Mutex<HashSet<String>> {
+    static ABSENT: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    ABSENT.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+/// True if `master_key` is known-absent — skip the R2 GET and 404 immediately.
+pub(crate) fn master_is_absent(master_key: &str) -> bool {
+    absent_masters().lock().unwrap().contains(master_key)
+}
+
+/// Record that `master_key`'s R2 GET returned no object, so the next request skips it.
+pub(crate) fn mark_master_absent(master_key: &str) {
+    absent_masters().lock().unwrap().insert(master_key.to_string());
+}
+
+/// Drop the whole negative cache — call when the content/manifest version bumps so
+/// a just-uploaded master (previously cached absent) is re-probed on next request.
+pub fn flush_absent_masters() {
+    let mut set = absent_masters().lock().unwrap();
+    let n = set.len();
+    set.clear();
+    if n > 0 {
+        tracing::info!(dropped = n, "lod: flushed absent-master cache (content version bumped)");
+    }
 }
 
 /// The process-wide per-key generation lock. One `tokio::Mutex` per R2 `key` so

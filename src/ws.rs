@@ -877,8 +877,11 @@ async fn modify_visuals(
 
 /// Handle `upload_master`: authorize, then write an edited master texture channel
 /// (`aspect`/`faction`/`variant`/`channel` + base64 PNG `data`) to the texture R2
-/// bucket. Same content-author gate as `add_content`; no content hot-swap (masters
-/// are the LOD source, not the rendered corpus), so it just replies ok/err.
+/// bucket. Same content-author gate as `add_content`. Uploading a channel the
+/// object's manifest didn't list (a from-scratch `emissive`) also patches the
+/// texture-existence manifest's `&maps`/`&hash` — that returns a new content
+/// version we broadcast as `content_changed` so clients reload and start fetching
+/// the map. An edit to an already-listed channel returns `None` (no broadcast).
 async fn upload_master(
     pool: &Arc<Pool>,
     upstream_players: Option<&Arc<bindings::players::DbConnection>>,
@@ -903,8 +906,14 @@ async fn upload_master(
     }
     .await;
     let reply = match result {
-        Ok(key) => {
+        Ok((key, version)) => {
             info!(cid, %key, "master texture uploaded");
+            // A manifest map bit was added → reload clients onto the new corpus so
+            // the resolver emits the channel and the renderer fetches it.
+            if let Some(version) = version {
+                info!(cid, %version, "upload_master: manifest maps updated");
+                pool.broadcast(GateMsg::content_changed(version));
+            }
             GateMsg::call_ok(cid)
         }
         Err(error) => {

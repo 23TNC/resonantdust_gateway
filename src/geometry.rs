@@ -13,7 +13,7 @@
 use axum::http::StatusCode;
 
 use crate::connections::Pool;
-use crate::lod::key_lock;
+use crate::lod::{key_lock, mark_master_absent, master_is_absent};
 
 /// The master channel whose alpha is the silhouette. `albedo` is what the client
 /// displays (and de-light leaves alpha untouched), so the geometry matches the
@@ -67,6 +67,12 @@ pub async fn ensure(pool: &Pool, rest: &str) -> Result<Vec<u8>, GeoError> {
     let geo_key = format!("textures/geo/{rest}");
     let master_key = format!("textures/master/{object_dir}/{variation}.{ALPHA_CHANNEL}.png");
 
+    // Negative cache shared with the LOD path (same master key): a master proven
+    // absent yields no sidecar either → 404 now, no R2 round-trip.
+    if master_is_absent(&master_key) {
+        return Err(GeoError::new(StatusCode::NOT_FOUND, format!("no master at {master_key} (cached absent)")));
+    }
+
     // Fast path: the versioned sidecar exists.
     if let Some(bytes) = store
         .get_bytes(&geo_key)
@@ -87,11 +93,17 @@ pub async fn ensure(pool: &Pool, rest: &str) -> Result<Vec<u8>, GeoError> {
         return Ok(bytes);
     }
 
-    let master = store
+    let master = match store
         .get_bytes(&master_key)
         .await
         .map_err(|e| GeoError::new(StatusCode::BAD_GATEWAY, e))?
-        .ok_or_else(|| GeoError::new(StatusCode::NOT_FOUND, format!("no master at {master_key}")))?;
+    {
+        Some(bytes) => bytes,
+        None => {
+            mark_master_absent(&master_key);
+            return Err(GeoError::new(StatusCode::NOT_FOUND, format!("no master at {master_key}")));
+        }
+    };
 
     let sidecar = resonantdust_geometry::generate(&master, &resonantdust_geometry::Options::default())
         .map_err(|e| GeoError::new(StatusCode::UNPROCESSABLE_ENTITY, e))?;

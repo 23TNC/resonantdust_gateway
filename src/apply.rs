@@ -184,7 +184,7 @@ pub async fn apply(
     // aren't enforced.
 
     // Effects → parallel arrays. Global aspects (holds / dead / reap) are `LogOp`s
-    // (op-log); per-def gameplay/pstyle are `SetCardStock`; spawns are `Create`.
+    // (op-log); per-def gameplay/pstatus are `SetCardStock`; spawns are `Create`.
     let mut create_defs: Vec<u16> = Vec::new();
     let mut create_surfaces: Vec<u8> = Vec::new();
     let mut create_macro_zones: Vec<u64> = Vec::new();
@@ -193,13 +193,17 @@ pub async fn apply(
     let mut create_tags: Vec<u8> = Vec::new();
     let mut create_distances: Vec<u16> = Vec::new();
     let mut create_cells: Vec<i64> = Vec::new();
+    let mut create_stacks: Vec<u8> = Vec::new();
     let mut create_times: Vec<u64> = Vec::new();
-    // `move` is retired (no replacement syscall); kept empty for the signature.
-    let move_ids: Vec<u32> = Vec::new();
-    let move_surfaces: Vec<u8> = Vec::new();
-    let move_macro_zones: Vec<u64> = Vec::new();
-    let move_owners: Vec<u32> = Vec::new();
+    // `^place` → Effect::Reposition: relocate a card to a destination zone, re-owned,
+    // with a `(micro cell, stack)` placement intent the shard resolves.
+    let mut move_ids: Vec<u32> = Vec::new();
+    let mut move_surfaces: Vec<u8> = Vec::new();
+    let mut move_macro_zones: Vec<u64> = Vec::new();
+    let mut move_owners: Vec<u32> = Vec::new();
     let mut move_distances: Vec<u16> = Vec::new();
+    let mut move_micros: Vec<u32> = Vec::new();
+    let mut move_stacks: Vec<u8> = Vec::new();
     let mut stat_souls: Vec<u32> = Vec::new();
     let mut stat_fields: Vec<u8> = Vec::new();
     let mut stat_bytes: Vec<u8> = Vec::new();
@@ -221,6 +225,7 @@ pub async fn apply(
                 stock,
                 tag,
                 micro_location,
+                stack,
             } => {
                 let bundle = pool.content();
                 let packed_def = bundle
@@ -235,7 +240,12 @@ pub async fn apply(
                 // translation, so a created card needs no follow-up SetCardStock.
                 create_stocks.push(*stock);
                 create_tags.push((*tag).min(u8::MAX as u32) as u8);
-                create_cells.push(micro_location.map(|m| m as i64).unwrap_or(-1));
+                // Placement intent: preferred cell + target stack. The shard lands it
+                // exactly there only if that cell is free AND inside the zone disk;
+                // an off-disk corner (an inventory's (0,0)) falls to the first free
+                // cell. So a recipe can always pass cell 0 for "inventory, anywhere".
+                create_cells.push(*micro_location as i64);
+                create_stacks.push(*stack);
                 create_times.push(eff_ms(te.at));
                 // A created stat card increments its soul's counter.
                 if let Some((field, byte)) = stat_slot(def_key) {
@@ -247,11 +257,24 @@ pub async fn apply(
                     }
                 }
             }
+            Effect::Reposition { card_id, surface, macro_zone, owner_id, micro_location, stack } => {
+                // Relocate a bound card to a destination zone (the blueprint back to
+                // inventory). The shard's move loop resolves the cell+stack via the
+                // shared sweep and re-owns it; inventory is unbounded (u16::MAX disk).
+                // `move_distances` is filled authoritatively by the region_distance
+                // loop below (NOT here) — pushing it twice would misalign the array.
+                move_ids.push(*card_id);
+                move_surfaces.push(*surface);
+                move_macro_zones.push(*macro_zone);
+                move_owners.push(*owner_id);
+                move_micros.push(*micro_location);
+                move_stacks.push(*stack);
+            }
             Effect::ModifyTileStock { .. } => { /* applied on the region DB above */ }
             Effect::TileLogOp { .. } => { /* applied on the region DB (tile holds) above */ }
             Effect::SetCardStock { card_id, stock } => {
                 // Gate-computed absolute new stock for a PER-DEF aspect (gameplay
-                // wood/pine, pstyle), future-stamped at the effect's time.
+                // wood/pine, pstatus), future-stamped at the effect's time.
                 stock_card_ids.push(*card_id);
                 stock_values.push(*stock);
                 stock_times.push(eff_ms(te.at));
@@ -345,6 +368,7 @@ pub async fn apply(
         create_stocks,
         create_tags,
         create_cells,
+        create_stacks,
         create_times,
         stat_souls,
         stat_fields,
@@ -362,6 +386,8 @@ pub async fn apply(
         move_macro_zones,
         move_owners,
         move_distances,
+        move_micros,
+        move_stacks,
         logops,
         move |_ctx, res| {
             let _ = done_tx.send(res.unwrap_or_else(|e| Err(format!("internal: {e}"))));

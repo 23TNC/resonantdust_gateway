@@ -104,6 +104,73 @@ pub struct RefreshOutcome {
     pub version: String,
 }
 
+/// The `&maps` bit a renderable channel occupies (bit0 albedo | bit1 normal |
+/// bit2 emissive), mirroring `view/src/assets/lodUrls.ts`. `diffuse` is the
+/// de-light SOURCE for albedo, not a fetched map, so it owns no bit (`None`).
+fn manifest_map_bit(channel: &str) -> Option<i64> {
+    match channel {
+        "albedo" => Some(1),
+        "normal" => Some(2),
+        "emissive" => Some(4),
+        _ => None,
+    }
+}
+
+/// A fresh per-object `&hash` derived from the uploaded master bytes — a content
+/// version that busts caches when an object's map set changes. Masked to 52 bits
+/// (the client parses it as a JS `Number` in the stem) and forced non-zero.
+fn manifest_hash(bytes: &[u8]) -> i64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut h);
+    ((h.finish() & ((1u64 << 52) - 1)) | 1) as i64
+}
+
+/// Patch the texture-existence manifest source `text`: within the `:<object>>`
+/// facet, OR `bit` into its `&maps` field and stamp `new_hash` into `&hash`.
+/// Returns the rewritten source when the bit was newly added, or `None` when the
+/// object/`&maps` field is absent or the bit was already set (a no-op). Line-based
+/// so it preserves the generated formatting — only the object's two fields move.
+fn patch_manifest_maps(text: &str, object: &str, bit: i64, new_hash: i64) -> Option<String> {
+    let want = format!(":{object}>");
+    let lines: Vec<&str> = text.lines().collect();
+    let start = lines.iter().position(|l| l.trim() == want)?;
+    // Scan the object's block (its `@define` fields) until the next facet/def.
+    let mut maps_idx = None;
+    let mut hash_idx = None;
+    for (j, l) in lines.iter().enumerate().skip(start + 1) {
+        let t = l.trim_start();
+        if t.starts_with(':') || t.starts_with('<') {
+            break; // next `:facet>` / `<def>` — out of this object's block
+        }
+        if t.ends_with("&maps set") {
+            maps_idx = Some(j);
+        } else if t.ends_with("&hash set") {
+            hash_idx = Some(j);
+        }
+    }
+    // No `&maps` line → legacy all-bits manifest: the client already fetches every
+    // channel, so there's nothing to declare.
+    let mi = maps_idx?;
+    let cur: i64 = lines[mi].trim_start().split_whitespace().next()?.parse().ok()?;
+    if cur & bit != 0 {
+        return None; // already declared
+    }
+    fn indent(l: &str) -> &str {
+        &l[..l.len() - l.trim_start().len()]
+    }
+    let mut out: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
+    out[mi] = format!("{}{} &maps set", indent(lines[mi]), cur | bit);
+    if let Some(hi) = hash_idx {
+        out[hi] = format!("{}{} &hash set", indent(lines[hi]), new_hash);
+    }
+    let mut joined = out.join("\n");
+    if text.ends_with('\n') {
+        joined.push('\n');
+    }
+    Some(joined)
+}
+
 pub struct Pool {
     cfg: GateConfig,
     /// The DSL content the gate runs + serves: the [`Bundle`] the recipe
@@ -412,6 +479,11 @@ impl Pool {
     /// Swap in `next`, broadcast `content_changed`, and report the new version.
     fn apply_content(&self, next: crate::content::LoadedContent) -> RefreshOutcome {
         self.swap_content(next);
+        // A new corpus version implies a possibly-new texture manifest — a master
+        // previously proven absent (negative-cached) may now exist. Re-admit the
+        // whole set so the next request re-probes (this is "set master to unknown
+        // on upload", riding the version bump rather than a separate channel).
+        crate::lod::flush_absent_masters();
         let version = self.content_version_hex();
         tracing::info!(%version, "content: refreshed");
         self.broadcast(resonantdust_protocol::protocol::GateMsg::content_changed(version.clone()));
@@ -422,8 +494,15 @@ impl Pool {
     /// `textures/master/<aspect>/<faction>/<variant>.<channel>.png` — the in-app
     /// art editor's "save master" path, mirroring `add_content` for DSL. Validates
     /// the channel + path segments (no traversal) + a PNG magic sniff, then PUTs.
-    /// Returns the written key. Masters are the LOD source, not what the game
-    /// renders, so there's no broadcast here — `bin/art lod` regenerates the LODs.
+    ///
+    /// Returns `(key, content_version)`: the written key plus, when this upload
+    /// ADDED a channel the object's manifest didn't list before (chiefly a
+    /// from-scratch `emissive`), the new content version after patching the
+    /// texture-existence manifest's `&maps`/`&hash`. Without that patch the master
+    /// would sit in R2 unfetched — the `^r2` resolver only emits `&m` bits the
+    /// manifest declares, and the client skips channels outside them. `None` when
+    /// the maps were unchanged (an edit to an already-listed channel) — those
+    /// regenerate in place from the cleared LOD subtree, no manifest move needed.
     pub async fn upload_master(
         &self,
         aspect: &str,
@@ -431,7 +510,7 @@ impl Pool {
         variant: &str,
         channel: &str,
         bytes: Vec<u8>,
-    ) -> Result<String, String> {
+    ) -> Result<(String, Option<String>), String> {
         const CHANNELS: [&str; 4] = ["diffuse", "albedo", "normal", "emissive"];
         if !CHANNELS.contains(&channel) {
             return Err(format!("bad channel {channel:?} (diffuse|albedo|normal|emissive)"));
@@ -469,7 +548,58 @@ impl Pool {
                 Err(e) => tracing::warn!(%prefix, error = %e, "upload_master: failed to clear stale {kind} subtree"),
             }
         }
-        Ok(key)
+        // This object's master now exists — drop any negative-cache entry so a
+        // request that 404'd before this upload regenerates instead of short-
+        // circuiting. (The map is shared process-wide; a full flush is cheap.)
+        crate::lod::flush_absent_masters();
+        // Manifest reconciliation: if this channel is a renderable map the object
+        // didn't list yet, set its `&maps` bit (+ stamp a fresh `&hash` so the
+        // client treats it as a re-mastered stem and rebuilds the frame). Coords
+        // map back as `aspect=<cat>.<biome>`, `faction=<obj>.<faction>`, so the
+        // manifest object is `(<cat>, <obj>)` in `visuals/manifest/<cat>.rd`.
+        let version = match manifest_map_bit(channel) {
+            Some(bit) => self.reconcile_manifest_maps(aspect, faction, bit, &bytes).await,
+            None => None, // `diffuse` is the de-light source, not a renderable map bit
+        };
+        Ok((key, version))
+    }
+
+    /// Patch the texture-existence manifest so a newly-uploaded channel's `&maps`
+    /// bit is declared (+ a fresh `&hash`), then persist + hot-swap via the visuals
+    /// authoring path. Returns the new content version when a patch landed, else
+    /// `None` (bit already present, object/field absent, or a best-effort failure —
+    /// the master write already succeeded, so a manifest hiccup only logs). `bytes`
+    /// seed the new hash so it's content-derived + stable per upload.
+    async fn reconcile_manifest_maps(
+        &self,
+        aspect: &str,
+        faction: &str,
+        bit: i64,
+        bytes: &[u8],
+    ) -> Option<String> {
+        let category = aspect.split('.').next().unwrap_or(aspect);
+        let object = faction.split('.').next().unwrap_or(faction);
+        let name = format!("visuals/manifest/{category}.rd");
+        let current = {
+            let guard = self.content.read().unwrap();
+            guard.sources.iter().find(|(n, _)| n == &name).map(|(_, t)| t.clone())
+        };
+        let Some(text) = current else {
+            tracing::warn!(%name, %object, "upload_master: manifest source missing; maps bit not declared");
+            return None;
+        };
+        let new_hash = manifest_hash(bytes);
+        let patched = patch_manifest_maps(&text, object, bit, new_hash)?; // None → no change needed
+        match self.modify_visuals(name.clone(), patched).await {
+            Ok(version) => {
+                tracing::info!(%name, %object, bit, "upload_master: declared new map bit in manifest");
+                Some(version)
+            }
+            Err(e) => {
+                tracing::warn!(%name, %object, error = %e, "upload_master: manifest map patch failed");
+                None
+            }
+        }
     }
 
     /// The texture R2 store (master + on-demand LOD bucket), if configured. Used

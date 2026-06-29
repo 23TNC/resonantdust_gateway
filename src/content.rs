@@ -643,7 +643,7 @@ pub fn def_aspect_total(bundle: &Bundle, name: &str, aspect: &str) -> i64 {
     let Some(def_id) = bundle.card_def_id(name) else {
         return 0;
     };
-    let view = card_view(bundle, &Card { def_id, stock: Vec::new(), stock_raw: 0 });
+    let view = card_view(bundle, &Card { def_id, stock: Vec::new(), stock_raw: 0, ..Default::default() });
     Store::with_root(view).read(&format!("aspect.{aspect}")).map(Cell::as_int).unwrap_or(0)
 }
 
